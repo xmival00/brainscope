@@ -59,6 +59,7 @@ From the user (2026-10-28):
 | D37 | Planned trajectory from Brainlab (user, 2026-10-28): per lead target x, y, z (frame) + arc and collar angles, pasted (one line or a table, matched to leads by name or order). The trajectory direction comes from the angles; the delivered lead is the one already detected in the Leads step (no second detection). Compared: target error (existing), angle between planned and detected axis, radial offset of the lead from the planned line at the target. Angle convention (zero, axes, sign, left/right arc mounting) to be confirmed on a Brainlab example (section 10) before it is trusted. |
 | D38 | Brain model as a guided tool, not one button (user, 2026-10-28): each stage (inside-skull mask from the CT, brain vs CSF from the MRI, cuts, smoothing/surface, leads, export) shows its mask or surface for the user to check, with a threshold preview and a brush (add/erase, size, fill, undo) to correct it before the next stage. The brush and label tools are shared with Structures (D31), so they are built once. Order: after the frame rework. |
 | D39 | Interaction standard (user, 2026-10-28): every tool should feel as smooth and intuitive as Brainlab: guided steps, direct manipulation in the views (click, drag, scroll), immediate visual feedback (previews, overlays), few dialogs, sensible defaults, everything undoable. |
+| D40 | Modules per subject (user, 2026-10-28): Subject steps (Import, Orient, AC/PC, Coregister) are shared; **Electrodes** (Leads, Export), **Stereotaxy** (Frame, Plans = planned vs delivered, reusing the detected leads) and **Brain model** are separate workflows, each shown or hidden per subject (stereotaxy on by default for pigs or when in use). Hidden modules also hide their readouts (frame coordinates, export space). |
 
 Decided during implementation (the user delegated these, 2026-10-28):
 
@@ -242,5 +243,8 @@ What v1 already does so these plug in:
    (or send the specification); a debug bundle of a CT with the box would let us test detection on real rods.
 3. Which point is the "delivered target": the lead tip, the deepest contact centre, or a chosen contact (all three
    are supported)?
-4. Arc and collar angles (D37): which frame/arc system (Leksell: ring + arc; CRW: collar + arc), and one Brainlab
-   example with target, entry point (frame mm) and the angles, to fix the convention.
+4. Arc and collar angles (D37): Brainlab gives X, Y, Z, Ring, Arc (human convention); the user's tool converts to the
+   animal frame (X, Y, Z, Collar, Arc). One example: (116, 90, 115, ring 180, arc 90) -> (116, 85, 90, collar 90,
+   arc 90), consistent with a 90° turn about X (Y' = 200 - Z, Z' = Y, collar = ring - 90) and with the mounting found
+   in the user's pig MRI (X->L, Y->S, Z->A). To confirm: the tool's equations, and how collar/arc define the
+   trajectory direction (an example with angles other than 90°, or with the entry point).

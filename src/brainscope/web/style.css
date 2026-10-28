@@ -118,3 +118,4 @@ kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 3p
 .legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
 .nsvg line { stroke: #3cdcff; stroke-width: 2.5; stroke-linecap: round; }
 .nsvg.off line { stroke: var(--muted, #777); }
+.navmods { padding: 0 10px; } .navmods label { margin: 2px 0; }

@@ -163,3 +163,16 @@ def test_brain_model_in_a_project(tmp_path, case):
     files = {Path(f).name for f in p.export_brain()}
     assert {"brain.gii", "brain.obj", "brain.stl", "brain_mask.nii.gz", "brain_mri.nii.gz", "scene.json",
             "lead-LA-shaft.gii", "lead-LA-contacts.obj"} <= files
+
+
+def test_modules_per_subject(tmp_path):
+    from brainscope.project import Project
+
+    p = Project.create(tmp_path / "s")
+    assert p.modules() == ["electrodes", "brain"]                 # human, no frame: no stereotaxy
+    p.set_species("pig")
+    assert p.modules() == ["electrodes", "stereotaxy", "brain"]   # pigs: stereotaxy by default
+    p.set_modules(["stereotaxy"])
+    assert p.summary()["modules"] == ["stereotaxy"]
+    with pytest.raises(ValueError):
+        p.set_modules(["frames"])

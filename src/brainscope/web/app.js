@@ -73,7 +73,7 @@ function updateCoords() {
     const q = [0, 1, 2].map((i) => a[i][0] * m[0] + a[i][1] * m[1] + a[i][2] * m[2] + a[i][3]);
     t += `   AC/PC  x ${fmt(q[0], 1)}  y ${fmt(q[1], 1)}  z ${fmt(q[2], 1)}`;
   }
-  const fd = S.step === 'frame' && S.p ? S.p.frame?.scans?.[frameScan()]?.display_to_frame : S.p?.frame_from_display;
+  const fd = !modOn('stereotaxy') ? null : S.step === 'frame' && S.p ? S.p.frame?.scans?.[frameScan()]?.display_to_frame : S.p?.frame_from_display;
   if (m && fd && S.step !== 'orient') { const q = xf(fd, m); t += `   frame  X ${fmt(q[0], 1)}  Y ${fmt(q[1], 1)}  Z ${fmt(q[2], 1)}`; }
   $('#coords').textContent = t;
 }
@@ -284,6 +284,7 @@ async function openProject(name) {
 async function setProject(p) {
   const changed = S.p?.name !== p.name;
   S.p = p;
+  if (!changed && !visibleSteps().some(([k]) => k === S.step)) S.step = 'coreg';  // its module was just hidden
   if (changed) { S.lead = null; S.contact = null; S.view = null; S.loaded = { base: null, contacts: null }; S.win = { mri: null, ct: null }; S.align = { ct: null, mri: null }; S.brainParams = null; S.brainExport = null; S.fmScan = null; S.fmBand = null; S.step = firstOpenStep(); }
   if (S.lead && !p.leads.some((l) => l.name === S.lead)) { S.lead = null; S.view = null; }
   $('#projectSelect').value = p.name;
@@ -298,7 +299,7 @@ function firstOpenStep() {
   const p = S.p;
   if (!p.scans.mri || !p.scans.ct) return 'import';
   if (!p.coreg) return 'orient';
-  return p.leads.length ? 'leads' : 'coreg';
+  return p.leads.length && modOn('electrodes') ? 'leads' : 'coreg';
 }
 async function newProject() {
   const name = prompt('Name of the new subject (letters, digits, space, . _ -):');
@@ -313,12 +314,34 @@ async function demoProject() {
 }
 
 // ---------- rendering ----------
+// The subject steps feed independent task modules, each shown or hidden per subject (PLAN D29, D40).
+const SECTIONS = [
+  { key: 'subject', name: 'Subject', steps: [['import', 'Import'], ['orient', 'Orient'], ['acpc', 'AC/PC'], ['coreg', 'Coregister']] },
+  { key: 'electrodes', name: 'Electrodes', steps: [['leads', 'Leads'], ['export', 'Export']] },
+  { key: 'stereotaxy', name: 'Stereotaxy', steps: [['frame', 'Frame'], ['targets', 'Plans']] },
+  { key: 'brain', name: 'Brain model', steps: [['brain', 'Brain']] },
+];
+const modOn = (k) => k === 'subject' || !S.p || (S.p.modules || []).includes(k);
+const visibleSteps = () => SECTIONS.filter((s) => modOn(s.key)).flatMap((s) => s.steps);
+function nextStep() {
+  const v = visibleSteps(), i = v.findIndex(([k]) => k === S.step);
+  return i >= 0 && i + 1 < v.length ? v[i + 1] : null;
+}
+function nextHTML(disabled = false, primary = true) {
+  const n = nextStep();
+  return n ? `<button class="${primary ? 'primary' : ''}" id="next" ${disabled ? 'disabled' : ''}>Next: ${n[1]}</button>` : '';
+}
+function bindNext() { if ($('#next')) $('#next').onclick = () => goStep(nextStep()[0]); }
+function renderNav() {
+  let n = 0;
+  $('#steps').innerHTML = SECTIONS.filter((s) => modOn(s.key)).map((s) => `<div class="navsec">${s.name}</div>${s.steps.map(([k, t]) =>
+    `<button data-step="${k}" class="${k === S.step ? 'on' : ''}" ${S.p ? '' : 'disabled'}><b>${++n}</b><span>${t}</span><i class="${stepStatus(k)}"></i></button>`).join('')}`).join('')
+    + (S.p ? `<div class="navsec">Modules</div><div class="navmods">${SECTIONS.slice(1).map((s) =>
+      `<label class="row small"><input type="checkbox" data-mod="${s.key}" ${modOn(s.key) ? 'checked' : ''}> ${s.name}</label>`).join('')}</div>` : '');
+    $$('[data-mod]').forEach((el) => { el.onchange = () => act('/modules', { modules: $$('[data-mod]').filter((x) => x.checked).map((x) => x.dataset.mod) }); });
+}
 function render() {
-  $$('#steps button').forEach((b) => {
-    b.classList.toggle('on', b.dataset.step === S.step);
-    b.disabled = !S.p;
-    b.querySelector('i').className = stepStatus(b.dataset.step);
-  });
+  renderNav();
   const panel = $('#panel');
   if (!S.p) { panel.innerHTML = welcomeHTML(); bindWelcome(); $('#inspector').hidden = true; return; }
   panel.innerHTML = { import: importHTML, orient: orientHTML, coreg: coregHTML, acpc: acpcHTML, frame: frameHTML, leads: leadsHTML,
@@ -348,8 +371,9 @@ function welcomeHTML() {
   return `<h2>Welcome</h2>
   <p>brainscope coregisters a CT to an MRI and finds the contacts of intracranial leads. Coordinates are reported in the
   orientation-corrected MRI space. <b>Research use only.</b></p>
-  <p class="small">Each subject (patient or animal) has shared steps (import, orientation, AC/PC, coregistration, frame) and independent
-  tasks built on them: <b>Leads</b> (contacts, targets) and <b>Brain model</b> (figures, 3D export).</p>
+  <p class="small">Each subject (patient or animal) has shared steps (import, orientation, AC/PC, coregistration) and independent
+  modules built on them, each shown or hidden per subject: <b>Electrodes</b> (lead contacts, export), <b>Stereotaxy</b> (frame
+  from the localizer, planned versus delivered) and <b>Brain model</b> (figures, 3D export).</p>
   <div class="row"><button class="primary" id="wNew">New subject</button><button id="wDemo">Open a demo case</button></div>
   <h3>Subjects</h3>${list.length ? list.map((n) => `<div class="leadItem" data-open="${esc(n)}">${esc(n)}</div>`).join('') : '<p class="muted">No subjects yet.</p>'}
   <p class="muted small">Subjects are stored in ${esc(S.state?.projects_root || '')}</p>`;
@@ -376,14 +400,14 @@ function importHTML() {
   ${scanCard('mri')}${scanCard('ct')}
   <h3>Species</h3><div class="row"><select id="species">${['human', 'pig', 'other'].map((s) => `<option ${S.p.species === s ? 'selected' : ''}>${s}</option>`).join('')}</select>
   <span class="muted small">Sets the registration smoothing.</span></div>
-  <div class="row"><span class="spacer"></span><button class="primary" id="next" ${S.p.scans.mri && S.p.scans.ct ? '' : 'disabled'}>Next: orient</button></div>
+  <div class="row"><span class="spacer"></span>${nextHTML(!(S.p.scans.mri && S.p.scans.ct))}</div>
   <div id="seriesPick"></div>`;
 }
 function bindImport() {
   $$('[data-nifti]').forEach((b) => { b.onclick = () => importNifti(b.dataset.nifti); });
   $$('[data-dicom]').forEach((b) => { b.onclick = () => importDicom(b.dataset.dicom); });
   $('#species').onchange = (e) => act('/species', { species: e.target.value });
-  $('#next').onclick = () => goStep('orient');
+  bindNext();
 }
 async function importNifti(role) {
   const d = desktopApi();
@@ -451,7 +475,7 @@ function orientHTML() {
   <div class="card"><label class="row"><input type="checkbox" id="leftOk" ${s.left_confirmed ? 'checked' : ''}> The subject's left is on the screen left in this scan</label>
   <div class="row"><input type="text" id="leftNote" placeholder="how you know (e.g. CT marker)" value="${esc(s.left_note)}" style="flex:1"></div>
   <p class="muted small">A left–right mirror cannot be detected from the images. Rotating or mirroring clears this confirmation.</p></div>
-  <div class="row"><span class="spacer"></span><button class="primary" id="next">Next: AC/PC</button></div>` : '<p class="muted">Import this scan first.</p>'}`;
+  <div class="row"><span class="spacer"></span>${nextHTML()}</div>` : '<p class="muted">Import this scan first.</p>'}`;
 }
 function orientGuideHTML() {  // how each view should look once the scan is oriented (for pigs: up = dorsal, front = snout)
   const t = (x, y, s) => `<text x="${x}" y="${y}" font-size="9" fill="#8b93a1" text-anchor="middle">${s}</text>`;
@@ -476,7 +500,7 @@ function bindOrient() {
       const other = S.orientRole === 'mri' ? 'ct' : 'mri';
       if (!S.p.scans[S.orientRole].left_confirmed) toast(`Left side of the ${S.orientRole.toUpperCase()} is not confirmed yet.`);
       if (S.p.scans[other] && !S.p.scans[other].left_confirmed) { S.orientRole = other; render(); refreshViewer(); return; }
-      goStep('acpc');
+      goStep(nextStep()[0]);
     };
   }
 }
@@ -515,7 +539,7 @@ function coregHTML() {
   ${axes.map(([a, n], i) => `<div class="row"><label>${n}</label><button data-t="${i}" data-s="-1">−</button><button data-t="${i}" data-s="1">+</button>
     <span class="muted small" style="margin-left:6px">rotate</span><button data-r="${i}" data-s="-1">↺</button><button data-r="${i}" data-s="1">↻</button></div>`).join('')}
   <div class="row"><span class="spacer"></span>${c ? `<button id="accept" class="${c.accepted ? '' : 'primary'}">${c.accepted ? 'Accepted ✓' : 'Accept alignment'}</button>` : ''}
-  <button id="next" ${c ? '' : 'disabled'}>Next: frame</button></div>`;
+  ${nextHTML(!c, false)}</div>`;
 }
 function bindCoreg() {
   $('#showCt').onclick = () => setBase('ct');
@@ -538,7 +562,7 @@ function bindCoreg() {
   $$('[data-t]').forEach((b) => { b.onclick = () => { const t = [0, 0, 0]; t[b.dataset.t] = S.nudgeMm * b.dataset.s; act('/nudge', { trans: t }); }; });
   $$('[data-r]').forEach((b) => { b.onclick = () => { const r = [0, 0, 0]; r[b.dataset.r] = S.nudgeDeg * b.dataset.s; act('/nudge', { rot: r }); }; });
   if ($('#accept')) $('#accept').onclick = () => act('/coreg-accept', { accepted: !S.p.coreg.accepted });
-  $('#next').onclick = () => goStep('frame');
+  bindNext();
 }
 function roiSize() {  // edge lengths (mm) of the box: the saved one, or a default for the species
   return S.p.roi?.size.map((x) => Math.round(x)) || ({ human: [150, 180, 140], pig: [80, 100, 70] }[S.p.species] || [110, 130, 100]);
@@ -742,7 +766,7 @@ function frameHTML() {
     <div class="row"><button id="fmSave">Save model</button><button id="fmReset" class="ghost">Default</button>
       <button id="fmExport" class="ghost">Export JSON</button><button id="fmImport" class="ghost">Import JSON…</button>
       ${s.display_to_frame ? '<button id="fmMount" class="ghost" title="Prefer the current orientation when fits are equally good (e.g. animals)">Current orientation as expected mounting</button>' : ''}</div></details>
-  <div class="row"><span class="spacer"></span><button class="primary" id="next">Next: leads</button></div>`;
+  <div class="row"><span class="spacer"></span>${nextHTML()}</div>`;
 }
 function readFrameModel() {
   const m = JSON.parse(JSON.stringify(S.p.frame.model));
@@ -823,11 +847,11 @@ function bindFrame() {
     m.mount = [0, 1, 2].map((i) => x[i].slice(0, 3));
     act('/frame-model', { model: m });
   };
-  $('#next').onclick = () => goStep('leads');
+  bindNext();
 }
 function targetsHTML() {
   const leads = S.p.leads;
-  if (!S.p.coreg || !leads.length) return '<h2>Planned vs delivered</h2><p class="muted">Detect at least one lead first.</p>';
+  if (!S.p.coreg || !leads.length) return '<h2>Planned vs delivered</h2><p class="muted">Detect at least one lead first (Electrodes → Leads); the plans are compared with the detected leads.</p>';
   if (!leads.some((l) => l.name === S.target)) S.target = leads[0].name;
   const l = leads.find((x) => x.name === S.target);
   const rows = leads.filter((x) => x.plan);
@@ -839,13 +863,13 @@ function targetsHTML() {
   ${rows.length ? `<h3>All plans</h3><table class="contacts"><tr><th>lead</th><th>space</th><th>point</th><th>distance</th><th>dx</th><th>dy</th><th>dz</th><th>depth</th><th>radial</th></tr>
     ${rows.map((x) => { const r = x.plan_result || {}; return `<tr><td>${esc(x.name)}</td><td>${x.plan.space}</td><td>${x.plan.point}</td>
       <td>${r.error ? esc(r.error) : fmt(r.distance, 2)}</td><td>${fmt(r.dx, 2)}</td><td>${fmt(r.dy, 2)}</td><td>${fmt(r.dz, 2)}</td><td>${fmt(r.depth, 2)}</td><td>${fmt(r.radial, 2)}</td></tr>`; }).join('')}</table>` : ''}
-  <div class="row"><span class="spacer"></span><button class="primary" id="next">Next: export</button></div>`;
+  <div class="row"><span class="spacer"></span>${nextHTML()}</div>`;
 }
 function bindTargets() {
   if (!$('#tgLead')) return;
   $('#tgLead').onchange = (e) => { S.target = e.target.value; render(); };
   bindPlan(S.p.leads.find((x) => x.name === S.target), (body) => act('/lead-edit', { name: S.target, ...body }));
-  $('#next').onclick = () => goStep('export');
+  bindNext();
 }
 function brainHTML() {
   if (!S.p.coreg) return '<h2>Brain model</h2><p class="muted">Coregister the CT to the MRI first (the CT gives the skull).</p>';
@@ -915,14 +939,14 @@ function acpcHTML() {
     <div class="row"><span class="badge ${S.p.acpc_matrix ? 'ok' : 'warn'}">${S.p.acpc_matrix ? 'AC/PC coordinates active' : 'incomplete'}</span><span class="spacer"></span>
       <button id="acClear" class="ghost" ${S.p.acpc ? '' : 'disabled'}>Clear</button></div></div>
   <p class="muted small">Markers: AC red, PC blue, midline green. Zoom in (+) for precise placement.</p>
-  <div class="row"><span class="spacer"></span><button class="primary" id="next">Next: coregister</button></div>`;
+  <div class="row"><span class="spacer"></span>${nextHTML()}</div>`;
 }
 function bindAcpc() {
   $$('[data-setpt]').forEach((b) => { b.onclick = () => setAcpcPoint(b.dataset.setpt); });
   $$('[data-gopt]').forEach((b) => { b.onclick = () => goTo(S.p.acpc[b.dataset.gopt]); });
   $('#acOrigin').onchange = (e) => act('/acpc', { origin: e.target.value });
   $('#acClear').onclick = () => act('/acpc', { clear: true });
-  $('#next').onclick = () => goStep('coreg');
+  bindNext();
 }
 function setAcpcPoint(k) {
   const m = crosshairMM();
@@ -1093,7 +1117,7 @@ function exportHTML() {
     ${opt('tsv', 'Contacts table (<span class="mono">electrodes.tsv</span>, BIDS columns) + coordinate system; with plans also <span class="mono">plan_vs_delivered.tsv</span>')}
     <div class="row" style="margin-left:22px"><label>x, y, z in</label><select id="expSpace"><option value="mri" ${o.space === 'mri' ? 'selected' : ''}>MRI space</option>
       <option value="acpc" ${o.space === 'acpc' ? 'selected' : ''} ${S.p.acpc_matrix ? '' : 'disabled'}>AC/PC coordinates</option>
-      <option value="frame" ${o.space === 'frame' ? 'selected' : ''} ${S.p.frame_from_display ? '' : 'disabled'}>frame coordinates</option></select>
+      ${modOn('stereotaxy') ? `<option value="frame" ${o.space === 'frame' ? 'selected' : ''} ${S.p.frame_from_display ? '' : 'disabled'}>frame coordinates</option>` : ''}</select>
       <span class="muted small">(AC/PC columns are always added when defined)</span></div>
     ${opt('leads_file', 'Results file (<span class="mono">.brainscope.json</span>, can be loaded again)')}
     ${opt('transforms', 'Transforms (4×4 text, ITK .tfm)')}

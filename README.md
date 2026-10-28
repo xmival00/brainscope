@@ -32,8 +32,9 @@ Projects are stored in `~/brainscope-projects` (change with `brainscope app --pr
 
 ## Workflow
 
-A project is one subject. The *Subject* steps (1-5) are shared; the modules *Leads* (6-8) and *Brain model* (9) are
-independent of each other and both use them.
+A project is one subject. The *Subject* steps (Import, Orient, AC/PC, Coregister) are shared; the modules
+*Electrodes* (Leads, Export), *Stereotaxy* (Frame, Plans) and *Brain model* are separate workflows built on them, each
+shown or hidden per subject (*Modules* at the bottom of the step list).
 
 Viewer: click to move the crosshair, or drag the *axial / coronal / sagittal* sliders above the views; zoom with
 *− + fit* (keys <kbd>+</kbd> <kbd>−</kbd> <kbd>0</kbd>) and move the zoomed view with Shift+drag or a middle-button

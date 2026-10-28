@@ -77,6 +77,8 @@ def list_projects(root):
     return sorted(p.name for p in root.iterdir() if (p / "project.json").is_file())
 
 
+MODULES = ("electrodes", "stereotaxy", "brain")  # task modules; the subject steps are always shown
+
 class Project:
     def __init__(self, root):
         self.root = Path(root)
@@ -209,6 +211,23 @@ class Project:
             raise ValueError(f"species must be one of {SPECIES}")
         self.checkpoint()
         self.subject["species"] = species
+        self.save()
+
+    def modules(self):
+        """Task modules shown for this subject (PLAN D40); stereotaxy by default for pigs or when it is in use."""
+        sub = self.subject
+        if sub.get("modules") is not None:
+            return list(sub["modules"])
+        f = sub.get("frame") or {}
+        stereo = sub["species"] == "pig" or bool(f.get("use") or f.get("fits")) or any(L.get("plan") for L in self.leads)
+        return [m for m in MODULES if m != "stereotaxy" or stereo]
+
+    def set_modules(self, modules):
+        mods = [m for m in MODULES if m in set(modules)]
+        if len(mods) != len(set(modules)):
+            raise ValueError(f"modules must be among {MODULES}")
+        self.checkpoint()
+        self.subject["modules"] = mods
         self.save()
 
     def orient(self, role, op=None, reset=False, left_confirmed=None, left_note=None):
@@ -1146,7 +1165,7 @@ class Project:
                 to_disp = self.display_from_raw(r) @ np.linalg.inv(np.array(s["pose"]))
                 frame_scans[r]["rods"] = {d["id"]: [np.round(apply(to_disp, d["p0"]), 2).tolist(), np.round(apply(to_disp, d["p1"]), 2).tolist()]
                                           for d in loc.rod_list(fr["model"])}
-        return {"name": self.root.name, "species": sub["species"], "scans": scans, "coreg": sub.get("coreg"),
+        return {"name": self.root.name, "species": sub["species"], "modules": self.modules(), "scans": scans, "coreg": sub.get("coreg"),
                 "roi": sub.get("roi"), "acpc": sub.get("acpc"), "acpc_matrix": am.tolist() if am is not None else None,
                 "acpc_distance": round(float(np.linalg.norm(np.subtract(a["ac"], a["pc"]))), 2)
                 if "ac" in a and "pc" in a else None,
