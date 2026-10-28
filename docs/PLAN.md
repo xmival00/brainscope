@@ -1,6 +1,7 @@
 # brainscope: plan and requirements
 
-Status: planning. No code yet. Research use only, never for clinical decisions.
+Status: version 0.1.0 implemented (see `README.md`); this file keeps the plan and the decisions. Research use only,
+never for clinical decisions.
 
 ## 1. Goal
 
@@ -27,19 +28,19 @@ From the user (2026-10-28):
 | D6 | The user decides which side is truly left (a marker is in the CT). The app only has to make this easy and visible. Display: the subject's left is on the left of the screen. **(Confirm: this means neurological display, the opposite of the radiological convention.)** |
 | D7 | Leads are defined by a person (how many, where each starts and ends). The automated part finds the contacts and places them; the person can fix them. Detection works in planes perpendicular to the lead, in several stages. |
 | D8 | Write our own detection. Use existing tools only where they enable this approach (libraries are fine; whole external pipelines are not the plan). |
-| D9 | Output: a contact table as a CSV compatible with BIDS `electrodes.tsv`. Full BIDS datasets are not needed now. |
+| D9 | Output: a contact table as a **TSV** compatible with BIDS `electrodes.tsv` (export only). Full BIDS datasets are not needed now. Results are also saved and loaded in our own format (`.brainscope.json`). |
 | D10 | Input: NIfTI and DICOM. DICOM is converted inside the app; the user never has to deal with it. |
 | D11 | No code signing for now. The OS warning on first start is acceptable. |
 | D12 | Repository: `xmival00/brainscope` for now, may move to `bnelair` later. |
 | D13 | Credits are limited: work in small steps that are each committed and pushed, so work can resume anywhere (see `CLAUDE.md`). |
 
-Proposed, not yet confirmed by the user:
+Decided during implementation (the user delegated these, 2026-10-28):
 
 | # | Proposal | Why |
 |---|---|---|
 | P1 | Engine in Python: `nibabel` (NIfTI files and headers), `SimpleITK` (registration, resampling), `numpy`/`scipy`, `dcm2niix` (DICOM). | Mature, wheels for Windows/macOS/Linux, small enough for an installer. Nonlinear tools (ANTsPy) are added only when atlas work starts. |
-| P2 | UI in TypeScript with [Niivue](https://github.com/niivue/niivue) (WebGL2 NIfTI viewer). | Built for NIfTI, fast, has drawing tools for the later annotation work. Framework (React or other) follows the dashboard's stack (open question). |
-| P3 | Desktop shell: PySide6 Qt WebEngine (Chromium) window showing the web UI, the engine in the same process, packaged with PyInstaller. | Reuses the proven installer pipeline of [mef3io-studio](https://github.com/bnelair/mef3io-studio) (Windows, macOS arm64/Intel, Linux). Alternative: Electron + Python sidecar. Decided by the shell spike (M5). |
+| P2 | UI in plain JavaScript (no framework, no build step) with [Niivue](https://github.com/niivue/niivue) (WebGL2 NIfTI viewer), vendored. | Built for NIfTI, fast, has drawing tools for the later annotation work. No build toolchain to maintain or pay for in CI. |
+| P3 | Desktop shell: pywebview (WebView2 on Windows, WKWebView on macOS) showing the web UI, engine in the same process, packaged with PyInstaller; falls back to the default browser. | Far smaller than Qt WebEngine or Electron. Installer pipeline follows [mef3io-studio](https://github.com/bnelair/mef3io-studio). |
 | P4 | License Apache-2.0. | Matches mef3io-studio. Do not copy code from GPL tools (e.g. Lead-DBS); reimplement from papers. |
 
 ## 3. Architecture
@@ -131,7 +132,7 @@ clicks are mapped back through its known matrix. This does not depend on the vie
 - A project stores a copy of every preset it used, so editing a preset later never changes old results.
 
 ### 5.6 Export
-- Contact table, CSV (TSV as an option for strict BIDS), columns in this order:
+- Contact table, TSV, columns in this order:
   - BIDS `electrodes.tsv` columns: `name`, `x`, `y`, `z`, `size`, `group` (lead name), `type`, `material`,
     `manufacturer`, `hemisphere`;
   - extra columns: `lead`, `contact_index`, `mri_i`, `mri_j`, `mri_k`, `ct_x`, `ct_y`, `ct_z`, `fit_mode`
@@ -186,6 +187,9 @@ first: it is testable without a UI, cheap to develop, and does not depend on the
 | M7 | Preset editor, project save/reopen, autosave, undo | |
 | M8 | Validation on human public data and the user's pig cases; user docs; v0.1 release | targets of section 6 met or re-set with the user |
 
+Status (2026-10-28): M0-M7 done. M8: validated on synthetic data (see `README.md`); validation on real human and
+pig scans is open. Installers are built by `.github/workflows/build.yml` (manual run or tag `v*`).
+
 ## 9. Later (context only, not v1)
 
 Multi-subject projects; annotating brain structures as 3D label volumes; building new pig atlases (population
@@ -202,9 +206,9 @@ What v1 already does so these plug in:
 
 ## 10. Open questions
 
-1. Which leads should ship as built-in presets (human SEEG models, the leads used in pigs)? Typical pig CT voxel
-   size and contact spacing: are contacts usually separable on your CTs?
-2. Which frontend stack does the dashboard use (React or other)? It decides the UI framework.
-3. Display: confirm "left is on left" = neurological display (D6).
-4. License: Apache-2.0 (P4)?
-5. Can you provide one or two pig cases (CT + MRI, DICOM and/or NIfTI) for private testing, outside the repo?
+1. Which leads should ship as built-in presets (the leads used in pigs)? Typical pig CT voxel size and contact
+   spacing: are contacts usually separable on your CTs?
+2. How will the dashboard host the UI? The UI is plain JavaScript and the engine an HTTP API, so it can be
+   embedded or served as is.
+3. Display: confirm "left is on left" = neurological display (D6). Implemented that way.
+4. Can you provide one or two pig cases (CT + MRI, DICOM and/or NIfTI) for private testing, outside the repo?

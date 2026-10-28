@@ -1,0 +1,100 @@
+# Installers: run by hand (Actions -> installers -> Run workflow) or by pushing a tag v*.
+# A tag also publishes a GitHub release with the installers.
+name: installers
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+env:
+  PYTHON_VERSION: "3.12"
+  INNO_SETUP_URL: https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe
+  INNO_SETUP_SHA256: 9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732
+jobs:
+  windows:
+    name: Windows x64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install ".[build]"
+      - run: pyinstaller --noconfirm --clean packaging/brainscope.spec
+      - name: Self-test the bundle
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath dist\brainscope\brainscope.exe -ArgumentList selftest -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "selftest failed with $($p.ExitCode)" }
+      - name: Inno Setup (pinned)
+        shell: pwsh
+        run: |
+          $setup = Join-Path $env:RUNNER_TEMP "innosetup.exe"
+          Invoke-WebRequest -Uri $env:INNO_SETUP_URL -OutFile $setup
+          $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $env:INNO_SETUP_SHA256) { throw "Inno Setup hash mismatch: $hash" }
+          $dir = Join-Path $env:RUNNER_TEMP "inno"
+          $p = Start-Process $setup -Wait -PassThru -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/CURRENTUSER", "/DIR=`"$dir`""
+          if ($p.ExitCode -ne 0) { throw "Inno Setup install failed: $($p.ExitCode)" }
+          "$dir" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+      - name: Installer and portable zip
+        shell: pwsh
+        run: |
+          $version = (python -c "import brainscope; print(brainscope.__version__)").Trim()
+          iscc /DAppVersion=$version /DSourceDir="$PWD\dist\brainscope" /DOutputDir="$PWD\dist" packaging\windows\brainscope.iss
+          if ($LASTEXITCODE -ne 0) { throw "iscc failed" }
+          Compress-Archive -Path dist\brainscope -DestinationPath "dist\brainscope-$version-windows-x64-portable.zip"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: brainscope-windows-x64
+          retention-days: 7
+          path: |
+            dist/*-setup.exe
+            dist/*-portable.zip
+          if-no-files-found: error
+
+  macos:
+    name: macOS ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - runner: macos-latest
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install ".[build]"
+      - run: pyinstaller --noconfirm --clean packaging/brainscope.spec
+      - name: Self-test the bundle
+        run: dist/brainscope.app/Contents/MacOS/brainscope selftest
+      - run: packaging/macos/make_dmg.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: brainscope-macos-${{ matrix.arch }}
+          retention-days: 7
+          path: dist/*.dmg
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist && sha256sum * > SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" * --repo "$GITHUB_REPOSITORY" --prerelease \
+            --title "brainscope $GITHUB_REF_NAME" \
+            --notes "Research use only. Installers are not code-signed: confirm the first start (Windows: More info -> Run anyway; macOS: System Settings -> Privacy & Security -> Open Anyway)."

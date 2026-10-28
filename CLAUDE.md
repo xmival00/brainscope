@@ -18,7 +18,21 @@ first, and record new decisions there (section 2).
 - Update the Status section below in the same commit, so the next session (anyone, anywhere) can continue.
 - Keep steps small enough to finish in one session.
 
+## Code map
+- Engine (`src/brainscope/`): `volume` (NIfTI), `orientation` (header-only fixes), `transforms` (RAS/LPS, the only
+  place they meet), `register` (rigid MI), `detect` (lead tracking + contact fit), `presets`, `dicom`, `project`
+  (project folder, undo, leads in CT-raw world, exports, results file), `server` (HTTP API + static UI), `app`
+  (pywebview window, browser fallback), `cli`, `demo`/`phantom` (synthetic data with ground truth).
+- UI: `src/brainscope/web/` (plain JS + vendored Niivue, no build step).
+- Packaging: `packaging/` + `.github/workflows/build.yml` (manual or tag `v*`); tests: `.github/workflows/ci.yml`.
+
+## Dev
+`python -m venv .venv && . .venv/bin/activate && pip install -e ".[dev,desktop]" && python -m pytest`;
+`brainscope app --browser` runs the UI in a browser. UI end-to-end check: headless Chromium (Playwright) on the
+demo case (`brainscope demo DIR`), see git history for the script pattern.
+
 ## Status
-- Done: M0 (plan).
-- Next: M1, engine core (see `docs/PLAN.md` section 8).
-- Waiting on the user: open questions in `docs/PLAN.md` section 10.
+- Done: plan; engine; DICOM; project + undo; results file import/export; TSV export; UI; installers workflow;
+  tests (synthetic ground truth, DICOM round trip, HTTP API).
+- Next: run the installers workflow and try the installers on Windows and macOS; validate on real human and pig
+  scans; answer `docs/PLAN.md` section 10.
