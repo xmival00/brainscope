@@ -98,3 +98,22 @@ def test_server_endpoints(tmp_path, case):
         assert "CT" in json.loads(e.value.read())["error"]
     finally:
         srv.shutdown()
+
+
+def test_large_ct_display_is_cropped_and_reduced(tmp_path, case, monkeypatch):
+    from brainscope import project as prj
+
+    d, truth = case
+    p = Project.create(tmp_path / "p2")
+    p.import_scan("mri", d / "mri.nii.gz")
+    p.import_scan("ct", d / "ct.nii.gz")
+    ct = volume.load(p.path("ct"))
+    monkeypatch.setitem(prj.DISPLAY_MAX_VOXELS, "ct", ct.data.size / 5)
+    v = volume.load(p.display_file("ct"))  # too large: averaged down, same world box
+    assert v.data.size <= ct.data.size / 5
+    full_box = ct.affine @ np.array([*np.array(ct.data.shape) - 1, 1.0])
+    assert np.linalg.norm(p.correction("ct") @ full_box - v.affine @ np.array([*np.array(v.data.shape) - 1, 1.0])) < 3
+    p.subject["coreg"] = {"ct_to_mri": truth["ct_to_mri"]}
+    monkeypatch.setitem(prj.DISPLAY_MAX_VOXELS, "ct", 1e9)
+    v = volume.load(p.display_file("ct"))  # coregistered: cropped to the MRI box, full resolution
+    assert np.allclose(np.sqrt((v.affine[:3, :3] ** 2).sum(0)), np.sqrt((ct.affine[:3, :3] ** 2).sum(0)))

@@ -31,6 +31,8 @@ LEADS_FORMAT = "brainscope-leads"
 ROLES = ("mri", "ct")
 SPECIES = ("human", "pig", "other")
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,63}")
+DISPLAY_MAX_VOXELS = {"mri": 100e6, "ct": 40e6}  # larger volumes fail to load in the viewer (seen: 300M voxels)
+DISPLAY_MARGIN_MM = 20.0
 TSV_COLUMNS = ["name", "x", "y", "z", "size", "group", "type", "material", "manufacturer", "hemisphere",
                "lead", "contact_index", "mri_i", "mri_j", "mri_k", "ct_x", "ct_y", "ct_z", "fit_mode",
                "confidence"]
@@ -238,6 +240,11 @@ class Project:
                                  "accepted": False, "method": "manual adjustment", "when": _now()}
         self.save()
 
+    def reset_coreg(self):
+        self.checkpoint()
+        self.subject["coreg"] = None
+        self.save()
+
     def accept_coreg(self, accepted=True):
         self.coreg_matrix()
         self.checkpoint()
@@ -348,20 +355,42 @@ class Project:
 
     # ---- files for the viewer ----
     def display_file(self, role):
-        """The scan with the header the viewer needs (corrected; CT also coregistered); voxels unchanged."""
-        if role == "mri":
-            aff = self.corrected_affine("mri")
-        else:
-            c = self.subject.get("coreg")
-            aff = self.correction("ct") @ self.raw_affine("ct")
-            if c:
-                aff = np.array(c["ct_to_mri"]) @ aff
-        key = hashlib.sha1(np.round(aff, 5).tobytes() + self.scan(role)["sha256"].encode()).hexdigest()[:12]
+        """What the viewer loads: the scan with its corrected header (CT: also coregistered). A large CT is cropped
+        to the MRI's field of view once coregistered, and anything still too large is averaged down; this is for
+        display only (detection and registration always use the full scan)."""
+        s = self.scan(role)
+        shape = np.array(s["shape"])
+        aff = self.correction(role) @ self.raw_affine(role)
+        c = self.subject.get("coreg")
+        if role == "ct" and c:
+            aff = np.array(c["ct_to_mri"]) @ aff
+        lo, hi = np.zeros(3, int), shape.copy()
+        if role == "ct" and c and self.scan("mri", required=False):
+            n = np.array(self.scan("mri")["shape"]) - 1
+            corners = apply(self.corrected_affine("mri"), [[i * n[0], j * n[1], k * n[2]]
+                                                           for i in (0, 1) for j in (0, 1) for k in (0, 1)])
+            vox = apply(np.linalg.inv(aff), corners)
+            margin = DISPLAY_MARGIN_MM / np.sqrt((aff[:3, :3] ** 2).sum(0))
+            lo = np.clip(np.floor(vox.min(0) - margin).astype(int), 0, shape)
+            hi = np.clip(np.ceil(vox.max(0) + margin).astype(int) + 1, 0, shape)
+            if np.any(hi - lo < 2):  # no overlap with the MRI: show all of it
+                lo, hi = np.zeros(3, int), shape.copy()
+        limit = DISPLAY_MAX_VOXELS[role]
+        whole = not lo.any() and np.array_equal(hi, shape) and np.prod(shape.astype(float)) <= limit
+        key = hashlib.sha1(np.round(aff, 5).tobytes() + s["sha256"].encode() + lo.tobytes() + hi.tobytes()
+                           + str(limit).encode()).hexdigest()[:12]
         f = self.root / "cache" / f"{role}-{key}.nii"
         if not f.exists():
             for old in (self.root / "cache").glob(f"{role}-*.nii"):
                 old.unlink()
-            volume.save_reheadered(self.path(role), f, aff)
+            if whole:
+                volume.save_reheadered(self.path(role), f, aff)
+            else:
+                shift = np.eye(4)
+                shift[:3, 3] = lo
+                data = self.volume(role).data[lo[0]:hi[0], lo[1]:hi[1], lo[2]:hi[2]]
+                data, sub = _reduce(data, aff @ shift, limit)
+                volume.save(f, np.round(data).astype(np.int16) if role == "ct" else data.astype(np.float32), sub)
         return f
 
     def contacts_file(self):
@@ -586,3 +615,23 @@ def _block_mean(data, affine, target_mm):
     scale = np.diag(list(f) + [1]).astype(float)
     scale[:3, 3] = (f - 1) / 2
     return d, affine @ scale
+
+
+def _reduce(data, affine, limit):
+    """Average voxel blocks until the volume has at most `limit` voxels (finest axes first), in slabs to save memory."""
+    sp = np.sqrt((affine[:3, :3] ** 2).sum(0))
+    f = np.ones(3, int)
+    while np.prod(np.array(data.shape) // f, dtype=float) > limit:
+        f[np.argmin(sp * f)] += 1
+    if (f == 1).all():
+        return np.asarray(data, np.float32), affine
+    n = np.array(data.shape) // f
+    out = np.empty(tuple(n), np.float32)
+    step = max(1, 64 // f[2]) * f[2]
+    for z0 in range(0, n[2] * f[2], step):
+        z1 = min(z0 + step, n[2] * f[2])
+        blk = np.asarray(data[:n[0] * f[0], :n[1] * f[1], z0:z1], np.float32)
+        out[:, :, z0 // f[2]:z1 // f[2]] = blk.reshape(n[0], f[0], n[1], f[1], (z1 - z0) // f[2], f[2]).mean((1, 3, 5))
+    scale = np.diag(list(f) + [1]).astype(float)
+    scale[:3, 3] = (f - 1) / 2
+    return out, affine @ scale

@@ -41,6 +41,8 @@ From the user (2026-10-28):
 | D19 | Orientation aids: labels on all four sides of each view, Niivue's orientation cube, and a small picture of how each view should look. |
 | D20 | CT intensity: at import the CT is classified as Hounsfield units, HU with an offset (e.g. 0-4095) or unknown scale; display and registration windows follow it. The user can always set the display window (min/max per volume) by hand. The CT is overlaid from the Import step on, placed by its header until coregistered. dcm2niix sidecars are read leniently (a Siemens CT had invalid JSON). |
 | D21 | macOS: Apple silicon only; no Intel Mac build. |
+| D22 | Large scans: the viewer gets a display copy (CT cropped to the MRI's field of view once coregistered, then averaged down to at most 40 M voxels; MRI up to 100 M); a 512x512x1137 CT failed to load otherwise. Engine always uses the full scan. |
+| D23 | Coregistration: a rough alignment by one landmark clicked in each scan (CT and MRI scanner coordinates can be unrelated, and the CT can cover the whole body), then the automatic step starts from the current alignment; "Start over" resets it. A "Center" button brings the crosshair back into the image. |
 
 Decided during implementation (the user delegated these, 2026-10-28):
 

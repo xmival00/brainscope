@@ -10,7 +10,7 @@ const LEAD_COLORS = ['#ff5d5d', '#3fa7ff', '#3ecf8e', '#f0b429', '#c77dff', '#ff
 
 const S = {
   state: null, p: null, step: 'import', presets: [], orientRole: 'mri', layout: 'multi',
-  ctWindow: 'bone', ctOpacity: 0.5, ctVisible: true, base: 'mri', win: { mri: null, ct: null }, winRole: 'ct', lead: null, contact: null, view: null,
+  ctWindow: 'bone', ctOpacity: 0.5, ctVisible: true, base: 'mri', win: { mri: null, ct: null }, winRole: 'ct', align: { ct: null, mri: null }, lead: null, contact: null, view: null,
   draft: { name: '', preset: '', hemisphere: 'n/a', curved: false, tip: null, entry: null },
   loaded: { base: null, contacts: null }, cropRadius: 70, useCrop: false, nudgeMm: 1, nudgeDeg: 1,
   exportOpts: { tsv: true, leads_file: true, transforms: true, mri: false, ct: false, labels: false },
@@ -186,7 +186,7 @@ async function openProject(name) {
 async function setProject(p) {
   const changed = S.p?.name !== p.name;
   S.p = p;
-  if (changed) { S.lead = null; S.contact = null; S.view = null; S.loaded = { base: null, contacts: null }; S.win = { mri: null, ct: null }; S.step = firstOpenStep(); }
+  if (changed) { S.lead = null; S.contact = null; S.view = null; S.loaded = { base: null, contacts: null }; S.win = { mri: null, ct: null }; S.align = { ct: null, mri: null }; S.step = firstOpenStep(); }
   if (S.lead && !p.leads.some((l) => l.name === S.lead)) { S.lead = null; S.view = null; }
   $('#projectSelect').value = p.name;
   $('#projectFolder').textContent = p.folder; $('#projectFolder').title = p.folder;
@@ -377,21 +377,30 @@ function bindOrient() {
 
 // ---------- step 3: coregister ----------
 function coregHTML() {
-  const c = S.p.coreg, ready = S.p.scans.mri && S.p.scans.ct;
+  const c = S.p.coreg, ready = S.p.scans.mri && S.p.scans.ct, al = S.align;
   const axes = [['x', 'left–right'], ['y', 'back–front'], ['z', 'down–up']];
+  const pt = (v) => (v ? v.map((x) => fmt(x, 1)).join(', ') : '<span class="muted">not set</span>');
   return `<h2>Coregister CT to MRI</h2>
   ${ready ? '' : '<p class="muted">Import both scans first.</p>'}
-  <p>Rigid alignment (mutual information). Check it with the CT overlay (opacity slider above, <kbd>O</kbd> toggles) before accepting.</p>
-  <div class="card">
+  <div class="card"><b>1. Rough alignment</b> <span class="muted small">(needed when the scanners' coordinates differ or the CT covers more than the head)</span>
+    <p class="small">Show the CT, put the crosshair on a landmark (e.g. the middle of the brain, or a marker) and press <i>CT point</i>.
+    Show the MRI, put the crosshair on the same landmark and press <i>MRI point</i>. Then move the CT onto the MRI.</p>
+    <div class="row"><button id="showCt">Show CT</button><button id="ctPoint">CT point</button><span class="mono small">${pt(al.ct)}</span></div>
+    <div class="row"><button id="showMri">Show MRI</button><button id="mriPoint">MRI point</button><span class="mono small">${pt(al.mri)}</span></div>
+    <div class="row"><button id="moveCt" ${al.ct && al.mri ? '' : 'disabled'}>Move CT onto MRI</button>
+      <span class="muted small">Tip: <i>Center</i> (above the images) brings the crosshair back into the image.</span></div>
+  </div>
+  <div class="card"><b>2. Automatic</b> <span class="muted small">(rigid, mutual information; starts from the current alignment)</span>
     <label class="row"><input type="checkbox" id="useCrop" ${S.useCrop ? 'checked' : ''}> Only use a box around the crosshair, half-size
       <input type="number" id="cropR" value="${S.cropRadius}" min="20" max="200"> mm</label>
-    <p class="muted small">Useful for pigs: put the crosshair in the middle of the brain so muscles and sinuses do not dominate.</p>
-    <div class="row"><button class="primary" id="runCoreg" ${ready ? '' : 'disabled'}>${c ? 'Run again' : 'Run coregistration'}</button>
-    <button id="refine" ${c ? '' : 'disabled'}>Refine from current</button></div>
+    <p class="muted small">Useful for pigs: put the crosshair in the middle of the brain (MRI shown) so muscles and sinuses do not dominate.</p>
+    <div class="row"><button class="primary" id="runCoreg" ${ready ? '' : 'disabled'}>${c ? 'Refine from current alignment' : 'Run coregistration'}</button>
+    <button id="resetCoreg" class="ghost" ${c ? '' : 'disabled'}>Start over</button></div>
   </div>
   ${c ? `<div class="card"><div class="kv"><span>Method</span><span>${esc(c.method)}</span><span>Metric</span><span>${c.metric ?? '–'}</span>
      <span>Status</span><span>${c.accepted ? '<span class="badge ok">accepted</span>' : '<span class="badge warn">not accepted</span>'}</span></div></div>` : ''}
-  <h3>Adjust by hand</h3>
+  <h3>3. Check and adjust by hand</h3>
+  <p class="small">Check with the CT overlay (opacity slider above, <kbd>O</kbd> toggles).</p>
   <div class="row"><label>step</label><select id="nMm">${[0.25, 0.5, 1, 2, 5].map((v) => `<option ${v === S.nudgeMm ? 'selected' : ''}>${v}</option>`).join('')}</select> mm
     <select id="nDeg">${[0.25, 0.5, 1, 2, 5].map((v) => `<option ${v === S.nudgeDeg ? 'selected' : ''}>${v}</option>`).join('')}</select> °</div>
   ${axes.map(([a, n], i) => `<div class="row"><label>${n}</label><button data-t="${i}" data-s="-1">−</button><button data-t="${i}" data-s="1">+</button>
@@ -400,17 +409,36 @@ function coregHTML() {
   <button id="next" ${c ? '' : 'disabled'}>Next: leads</button></div>`;
 }
 function bindCoreg() {
+  $('#showCt').onclick = () => setBase('ct');
+  $('#showMri').onclick = () => setBase('mri');
+  $('#ctPoint').onclick = () => { S.align.ct = crosshairMM(); render(); };
+  $('#mriPoint').onclick = () => { S.align.mri = crosshairMM(); render(); };
+  $('#moveCt').onclick = async () => {
+    const t = S.align.mri.map((x, i) => x - S.align.ct[i]);
+    S.align = { ct: null, mri: null };
+    if (await act('/nudge', { trans: t }, 'Moving the CT…')) { setBase('mri'); goTo(S.p.scans.mri.center); }
+  };
   $('#useCrop').onchange = (e) => { S.useCrop = e.target.checked; };
   $('#cropR').onchange = (e) => { S.cropRadius = Number(e.target.value); };
-  const body = (from_current) => ({ from_current, ...(S.useCrop ? { crop_center: crosshairMM(), crop_radius: S.cropRadius } : {}) });
-  $('#runCoreg').onclick = () => act('/coreg', body(false), 'Coregistering (usually under a minute)…');
-  $('#refine').onclick = () => act('/coreg', body(true), 'Refining…');
+  $('#runCoreg').onclick = () => act('/coreg', { from_current: !!S.p.coreg, ...(S.useCrop ? { crop_center: crosshairMM(), crop_radius: S.cropRadius } : {}) },
+    'Coregistering (usually under a minute)…');
+  $('#resetCoreg').onclick = () => act('/coreg-reset', {});
   $('#nMm').onchange = (e) => { S.nudgeMm = Number(e.target.value); };
   $('#nDeg').onchange = (e) => { S.nudgeDeg = Number(e.target.value); };
   $$('[data-t]').forEach((b) => { b.onclick = () => { const t = [0, 0, 0]; t[b.dataset.t] = S.nudgeMm * b.dataset.s; act('/nudge', { trans: t }); }; });
   $$('[data-r]').forEach((b) => { b.onclick = () => { const r = [0, 0, 0]; r[b.dataset.r] = S.nudgeDeg * b.dataset.s; act('/nudge', { rot: r }); }; });
   if ($('#accept')) $('#accept').onclick = () => act('/coreg-accept', { accepted: !S.p.coreg.accepted });
   $('#next').onclick = () => goStep('leads');
+}
+function setBase(b) {
+  S.base = b;
+  $$('#base button').forEach((x) => x.classList.toggle('on', x.dataset.base === b));
+  refreshViewer();
+}
+function centerView() {
+  if (!nv.volumes.length) return;
+  nv.scene.crosshairPos = [0.5, 0.5, 0.5];
+  nv.drawScene(); nv.createOnLocationChange?.(); updateCoords();
 }
 
 // ---------- step 4: leads ----------
@@ -778,7 +806,8 @@ $('#winRole').onchange = (e) => { S.winRole = e.target.value; refreshViewer(); }
 $('#winLo').onchange = setWindow;
 $('#winHi').onchange = setWindow;
 $('#winAuto').onclick = () => { S.win[S.winRole] = null; refreshViewer(); };
-$$('#base button').forEach((b) => { b.onclick = () => { S.base = b.dataset.base; $$('#base button').forEach((x) => x.classList.toggle('on', x === b)); refreshViewer(); }; });
+$$('#base button').forEach((b) => { b.onclick = () => setBase(b.dataset.base); });
+$('#centerView').onclick = centerView;
 $('#ctOpacity').oninput = (e) => { S.ctOpacity = Number(e.target.value); S.ctVisible = true; refreshViewer(); };
 $('#projectSelect').onchange = (e) => openProject(e.target.value);
 $('#newProject').onclick = newProject;
