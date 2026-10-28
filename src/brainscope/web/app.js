@@ -53,6 +53,7 @@ const nv = new niivue.Niivue({
   backColor: [0, 0, 0, 1], crosshairColor: [0.25, 0.85, 1, 0.75], isRadiologicalConvention: false,
   show3Dcrosshair: true, isOrientationTextVisible: true, showAllOrientationMarkers: true, isOrientCube: true,
   dragAndDropEnabled: false, loadingText: '',
+  meshThicknessOn2D: 0.5,  // 2D views show where a surface crosses the slice, not the whole surface over the scan
 });
 nv.setMouseEventConfig({ leftButton: { primary: 8, withShift: 3 }, centerButton: 3 });  // click: crosshair; Shift+drag, middle drag: pan (8, 3 = Niivue's crosshair, pan)
 let nvReady = nv.attachToCanvas($('#gl'));
@@ -150,7 +151,7 @@ function extraLayers() {  // label overlays on the MRI grid: contacts (leads, ex
   if (S.step === 'brain' && S.p.brain) {
     const bk = hkey([S.p.brain.when]);
     out.push({ key: `b${bk}`, url: `${P('/brain/brain_mask.nii.gz')}?v=${bk}`, name: `brainmask-${bk}.nii.gz`,
-      cm: { R: [0, 255], G: [0, 120], B: [0, 160], A: [0, 110], I: [0, 1], labels: ['', 'brain'] } });
+      opacity: 0.3, cm: { R: [0, 255], G: [0, 120], B: [0, 160], A: [0, 255], I: [0, 1], labels: ['', 'brain'] } });  // the MRI stays readable
   }
   const fr = S.p.frame || {};
   if (S.step === 'frame' && fr.n_rods) {
@@ -186,11 +187,11 @@ async function refreshViewer() {
       });
       if (nv.volumes.length) nv.updateGLVolume();
     }
-    const extras = extraLayers(), ek = extras.map((x) => x.key).join('|');
+    const extras = vols.length ? extraLayers() : [], ek = extras.map((x) => x.key).join('|');  // no overlays without a scan (3D surfaces)
     if (ek !== S.loaded.contacts) {
       while (nv.volumes.length > vols.length) nv.removeVolume(nv.volumes[nv.volumes.length - 1]);
       for (const x of extras) {
-        await nv.addVolumeFromUrl({ url: x.url, name: x.name, opacity: 1 });
+        await nv.addVolumeFromUrl({ url: x.url, name: x.name, opacity: x.opacity ?? 1 });
         nv.volumes[nv.volumes.length - 1].setColormapLabel(x.cm);
       }
       if (extras.length) nv.updateGLVolume();
@@ -216,6 +217,7 @@ async function syncMeshes() {  // brain surface and lead meshes, shown in the br
       list.push({ url: `${P(`/brain/lead-${l.file}-contacts.gii`)}?v=${want}`, name: `contacts-${l.file}-${want}.gii`, rgba255: [...c, 255] });
     });
   }
+  if (!list.length) { while (nv.meshes.length) nv.removeMesh(nv.meshes[0]); nv.drawScene(); return; }  // loadMeshes([]) keeps the old ones
   try { await nv.loadMeshes(list); } catch (e) { toast(`Viewer: ${e.message}`, 'error'); }
 }
 function syncSliders() {  // slice position sliders follow the crosshair
@@ -248,8 +250,13 @@ async function openProject(name) {
   if (!name) { S.p = null; S.lead = null; render(); refreshViewer(); return; }
   await busy('Opening subject…', async () => { await setProject(await api(`/api/p/${encodeURIComponent(name)}`)); });
 }
+function frameCompat(p) {  // the current Frame step reads the CT fit in its earlier shape (until the new Frame step, PLAN D33-D36)
+  const ct = p.frame?.scans?.ct;
+  if (ct) Object.assign(p.frame, { fits: ct.auto.fits, chosen: ct.auto.chosen, threshold: ct.band?.[0], n_rods: ct.auto.n_lines });
+}
 async function setProject(p) {
   const changed = S.p?.name !== p.name;
+  frameCompat(p);
   S.p = p;
   if (changed) { S.lead = null; S.contact = null; S.view = null; S.loaded = { base: null, contacts: null }; S.win = { mri: null, ct: null }; S.align = { ct: null, mri: null }; S.brainParams = null; S.brainExport = null; S.step = firstOpenStep(); }
   if (S.lead && !p.leads.some((l) => l.name === S.lead)) { S.lead = null; S.view = null; }
@@ -513,7 +520,7 @@ function roiSize() {  // edge lengths (mm) of the box: the saved one, or a defau
 function zoom(factor) {  // 2D zoom around the crosshair (Niivue's own formula); factor 0 = fit
   if (!nv.volumes.length) return;
   if (!factor) { nv.setPan2Dxyzmm([0, 0, 0, 1]); return; }
-  const p = [...nv.scene.pan2Dxyzmm], c = crosshairMM();
+  const p = [...nv.scene.pan2Dxyzmm], c = nv.frac2mm(nv.scene.crosshairPos);  // Niivue's slice space, not crosshairMM(): they differ for oblique scans
   const z = Math.min(20, Math.max(0.5, Math.round(p[3] * factor * 10) / 10)), e = p[3] - z;
   nv.setPan2Dxyzmm([p[0] + e * c[0], p[1] + e * c[1], p[2] + e * c[2], z]);
 }
@@ -525,7 +532,8 @@ function setBase(b) {
 function centerView() {
   if (!nv.volumes.length) return;
   nv.scene.crosshairPos = [0.5, 0.5, 0.5];
-  nv.drawScene(); nv.createOnLocationChange?.(); updateCoords();
+  nv.scene.pan2Dxyzmm = [0, 0, 0, nv.scene.pan2Dxyzmm[3]];  // also bring a panned view back (keeps the zoom)
+  nv.drawScene(); nv.createOnLocationChange?.(); updateCoords(); syncSliders();
 }
 
 // ---------- step 4: leads ----------
@@ -687,7 +695,7 @@ function bindFrame() {
     'Finding the localizer rods and fitting the frame…');
   $$('[name="fmFit"]').forEach((el) => { el.onchange = () => act('/frame-choose', { index: Number(el.value) }); });
   if ($('#fmMount')) $('#fmMount').onclick = () => {
-    const m = readFrameModel(), x = S.p.frame.fits[S.p.frame.chosen || 0].matrix;
+    const m = readFrameModel(), x = S.p.frame.scans.ct.display_to_frame;  // frame axes in the (RAS) display world
     m.mount = [0, 1, 2].map((i) => x[i].slice(0, 3));
     act('/frame-model', { model: m });
   };

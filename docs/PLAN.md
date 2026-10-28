@@ -52,6 +52,13 @@ From the user (2026-10-28):
 | D30 | Brain model: intracranial mask from the CT (region grown inside the skull from a seed, thin connections cut), refined with the MRI (brain vs CSF threshold) so gyri and sulci show; user cuts (planes at the crosshair, e.g. remove brainstem/cerebellum or one hemisphere); smoothing; surface mesh (marching cubes, scikit-image). Leads as 3D meshes (depth: cylinders; strips: 1xN via the curved-lead mode and a strip preset, rendered as discs). Export for Python/MATLAB: NIfTI masks, GIfTI/OBJ/STL meshes, contact tables. |
 | D31 | Structures (e.g. ANT, HPC): label table per subject; Niivue drawing tools on the MRI (pen, eraser, intensity-limited fill, click-to-segment as the smart brush, undo); saved as a label NIfTI on the MRI grid; volumes and meshes exported. Plane sliders for moving through slices without clicking. |
 | D32 | Viewer navigation: plain click always moves the crosshair; Shift+drag or middle-button drag moves (pans) the zoomed 2D view (Niivue's pan mode); *fit* resets zoom and pan. |
+| D33 | Frame per scan (user, 2026-10-28): the localizer can be found in the CT or the MRI; each scan keeps its own fit, stored in that scan's raw world (re-orientation keeps it). With both, the two fits are compared (mean displacement near the brain, which also checks the coregistration) and the user chooses which one gives frame coordinates. |
+| D34 | Intensity band (from, to) instead of one threshold, with a live overlay of the voxels inside the band, so the user sees what is selected (CT rods may be only slightly brighter, or darker, than the plate around them). |
+| D35 | Model-guided rod tracking: the expected rods are drawn at the current pose; the rough pose comes from auto-find (global line search in the band) or by hand (centre at the crosshair, 90° turns, nudges). Then, along each expected rod, planes every 1 mm perpendicular to it: the nearest compact blob of band voxels within 5 mm is the rod centre (blobs reaching the window edge or longer than 10 mm, e.g. plates, are ignored). The model is fitted to these points with fixed rod correspondence; track and fit alternate 3 times. Only the rods' neighbourhood is searched, so low-contrast rods work. |
+| D36 | Rod inspector (like the lead inspector): per rod, lengthwise views and the cross-section, per-slice centres with their residual; a click sets a manual centre for that slice (kept across refits, raw world), slices can be excluded (stored as mm along the model rod); refit. Frame work goes before Structures (user, 2026-10-28). |
+| D37 | Planned trajectory from Brainlab (user, 2026-10-28): per lead target x, y, z (frame) + arc and collar angles, pasted (one line or a table, matched to leads by name or order). The trajectory direction comes from the angles; the delivered lead is the one already detected in the Leads step (no second detection). Compared: target error (existing), angle between planned and detected axis, radial offset of the lead from the planned line at the target. Angle convention (zero, axes, sign, left/right arc mounting) to be confirmed on a Brainlab example (section 10) before it is trusted. |
+| D38 | Brain model as a guided tool, not one button (user, 2026-10-28): each stage (inside-skull mask from the CT, brain vs CSF from the MRI, cuts, smoothing/surface, leads, export) shows its mask or surface for the user to check, with a threshold preview and a brush (add/erase, size, fill, undo) to correct it before the next stage. The brush and label tools are shared with Structures (D31), so they are built once. Order: after the frame rework. |
+| D39 | Interaction standard (user, 2026-10-28): every tool should feel as smooth and intuitive as Brainlab: guided steps, direct manipulation in the views (click, drag, scroll), immediate visual feedback (previews, overlays), few dialogs, sensible defaults, everything undoable. |
 
 Decided during implementation (the user delegated these, 2026-10-28):
 
@@ -207,8 +214,11 @@ first: it is testable without a UI, cheap to develop, and does not depend on the
 | M8 | Validation on human public data and the user's pig cases; user docs; v0.1 release | targets of section 6 met or re-set with the user |
 
 Status (2026-10-28): M0-M7 done. M8: validated on synthetic data (see `README.md`); validation on real human and
-pig scans is open. 0.1.7: subject steps + modules (D29), Brain model (D30), plane sliders, pan (D32); next 0.1.8:
-Structures (D31). Installers are built by `.github/workflows/build.yml` (manual run or tag `v*`).
+pig scans is open. 0.1.7: subject steps + modules (D29), Brain model (D30), plane sliders, pan (D32). 0.1.8 = frame
+rework (D33-D36) in steps: (a) engine + storage, (b) Frame step UI (scan, band preview, expected rods, rough
+alignment, track/fit, CT-MRI agreement), (c) rod inspector, (d) debug bundle with full-resolution crops around the
+rods, docs, release. Then the drawing tools (brush, fill, undo, label volumes) with the guided Brain model (D38),
+then Structures (D31). Installers are built by `.github/workflows/build.yml` (manual run or tag `v*`).
 
 ## 9. Later (context only, not v1)
 
@@ -231,3 +241,5 @@ What v1 already does so these plug in:
    (or send the specification); a debug bundle of a CT with the box would let us test detection on real rods.
 3. Which point is the "delivered target": the lead tip, the deepest contact centre, or a chosen contact (all three
    are supported)?
+4. Arc and collar angles (D37): which frame/arc system (Leksell: ring + arc; CRW: collar + arc), and one Brainlab
+   example with target, entry point (frame mm) and the angles, to fix the convention.

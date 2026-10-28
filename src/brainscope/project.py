@@ -28,7 +28,7 @@ from . import __version__, acpc, brainmodel, detect, register, volume
 from . import localizer as loc
 from . import orientation as ori
 from . import presets as pr
-from .transforms import apply, rigid, write_itk
+from .transforms import about, apply, rigid, rotation, translation, write_itk
 
 FORMAT = "brainscope-project"
 LEADS_FORMAT = "brainscope-leads"
@@ -461,77 +461,231 @@ class Project:
             volume.save(f, _balls(tuple(self.scan("mri")["shape"]), aff, pts, 1.5), aff)
         return f
 
-    # ---- stereotactic frame (N-bar localizer) ----
+    # ---- stereotactic frame (N-bar localizer), per scan (PLAN D33-D36) ----
+    def _frame(self):
+        """The frame state; a 0.1.6 project (one CT fit in the corrected CT world) is converted on first use."""
+        f = self.subject.setdefault("frame", {})
+        if "fits" in f and "scans" not in f:
+            c = self.correction("ct")
+            ci = np.linalg.inv(c)
+            fits = [dict(x, matrix=(np.array(x["matrix"]) @ c).tolist()) for x in f["fits"]]
+            best = fits[f.get("chosen", 0)]
+            f = {"model": f["model"], "use": "ct", "scans": {"ct": {
+                "band": [f.get("threshold"), None], "pose": best["matrix"], "fitted": True, "method": "auto",
+                "summary": {"rms": best["rms"], "axes": best["axes"], "plates": best.get("plates")},
+                "auto": {"lines": [[apply(ci, a).tolist(), apply(ci, b).tolist()] for a, b in f.get("rods", [])],
+                         "fits": fits, "chosen": f.get("chosen", 0)}}}}
+            self.subject["frame"] = f
+        f.setdefault("scans", {})
+        f.setdefault("model", loc.default_model())  # stored, so a later edit can tell whether the rods changed
+        return f
+
     def frame_model(self):
-        f = self.subject.get("frame") or {}
-        return f.get("model") or loc.default_model()
+        return self._frame().get("model") or loc.default_model()
 
     def set_frame_model(self, model=None, reset=False):
         m = loc.default_model() if reset else loc.validate(model)
-        f = self.subject.get("frame") or {}
+        f = self._frame()
         self.checkpoint()
-        if f.get("model") and f["model"]["plates"] == m["plates"] and not reset:
-            f["model"] = m  # same rods (e.g. only the expected mounting or the notes changed): keep the fit
-        else:
-            self.subject["frame"] = {"model": m}  # new geometry: an earlier fit no longer applies
+        same = bool(f.get("model")) and f["model"]["plates"] == m["plates"] and not reset
+        f["model"] = m
+        if not same:  # new geometry: poses and rod points no longer apply (the intensity bands stay)
+            f["scans"] = {k: {"band": s.get("band")} for k, s in f["scans"].items()}
+            f.pop("use", None)
         self.save()
 
-    def detect_frame(self, threshold=None):
-        ct = self.volume("ct")
-        thr = float(threshold) if threshold not in (None, "") else float(self.ct_levels()["overlay_bone"][0]) + 200
+    def display_from_raw(self, role):
+        """A scan's raw world -> the world the viewer shows it in (the CT: on the MRI once coregistered)."""
+        m = self.correction(role)
+        return self.coreg_matrix() @ m if role == "ct" and self.subject.get("coreg") else m
+
+    def default_frame_band(self, role):
+        if role == "ct":
+            return [float(self.ct_levels()["overlay_bone"][0]) + 200, None]
+        d = self.volume(role).data.ravel()
+        d = d[:: max(1, d.size // 2_000_000)]
+        return [float(np.percentile(d[d > 0], 99.5)), None]
+
+    def frame_state(self, role):
+        if role not in ("ct", "mri"):
+            raise ValueError("the localizer is found in 'ct' or 'mri'")
+        self.scan(role)
+        s = self._frame()["scans"].setdefault(role, {})
+        if not s.get("band") or s["band"][0] is None:
+            s["band"] = self.default_frame_band(role)
+        s.setdefault("manual", {})
+        s.setdefault("excluded", {})
+        return s
+
+    def set_frame_band(self, role, band):
+        s = self.frame_state(role)
+        lo, hi = band
+        self.checkpoint()
+        s["band"] = [float(lo), None if hi in (None, "") else float(hi)]
+        self.save()
+
+    def frame_pose(self, role, op, point=None, axis=None, deg=90.0, move=(0, 0, 0), rot=(0, 0, 0), index=0):
+        """Rough alignment of the expected localizer in a scan; points and axes in that scan's display world.
+        op: 'reset' (expected mounting, centred on the scan), 'place' (model centre at `point`), 'turn' (`deg` about
+        display axis `axis`), 'nudge' (`move` mm, `rot` degrees about the model centre), 'auto' (auto-find fit
+        `index`)."""
+        s = self.frame_state(role)
         model = self.frame_model()
-        lines, groups, fits = loc.detect(ct.data, self.corrected_affine("ct"), model, thr)
-        rods = [[(L["c"] + L["t0"] * L["u"]).tolist(), (L["c"] + L["t1"] * L["u"]).tolist()]
-                for g in groups for L in (lines[i] for i in g)]
+        disp = self.display_from_raw(role)
+        rods = loc.rod_list(model)
+        cf = np.mean([q for r in rods for q in (r["p0"], r["p1"])], 0)
+        if op == "auto":
+            fits = (s.get("auto") or {}).get("fits") or []
+            if not 0 <= int(index) < len(fits):
+                raise ValueError("no such fit")
+            pose, summary = np.array(fits[int(index)]["matrix"]), {k: fits[int(index)].get(k) for k in ("rms", "axes", "plates")}
+            s["auto"]["chosen"] = int(index)
+        else:
+            if op == "reset" or s.get("pose") is None:
+                n = (np.array(self.scan(role)["shape"]) - 1) / 2
+                mount = np.asarray(model["mount"], float)
+                f = np.eye(4)
+                f[:3, :3], f[:3, 3] = mount, cf - mount @ apply(disp @ self.raw_affine(role), n)
+            else:
+                f = np.array(s["pose"]) @ np.linalg.inv(disp)  # display world -> frame
+            x = apply(np.linalg.inv(f), cf)  # model centre, display world
+            ax = {"x": 0, "y": 1, "z": 2}
+            if op == "place":
+                a = translation(np.asarray(point, float) - x)
+            elif op == "turn":
+                r = np.zeros(3)
+                r[ax[axis]] = float(deg)
+                a = about(rotation(r), x)
+            elif op == "nudge":
+                a = translation(move) @ about(rotation(rot), x)
+            elif op == "reset":
+                a = np.eye(4)
+            else:
+                raise ValueError(f"unknown alignment operation {op!r}")
+            pose, summary = f @ np.linalg.inv(a) @ disp, None
         self.checkpoint()
-        self.subject["frame"] = {"model": model, "threshold": thr, "rods": rods, "chosen": 0, "when": _now(),
-                                 "fits": [dict(f, matrix=f["matrix"].tolist(), rms=round(f["rms"], 3)) for f in fits]}
+        s.update(pose=pose.tolist(), fitted=op == "auto", method="auto" if op == "auto" else "by hand",
+                 summary=summary, tracked=None)
+        if op == "auto" and not self._frame().get("use"):
+            self._frame()["use"] = role
         self.save()
 
-    def choose_frame(self, index):
-        f = self.subject.get("frame") or {}
-        if not 0 <= int(index) < len(f.get("fits", [])):
-            raise ValueError("no such fit")
+    def frame_autofind(self, role):
+        """Search the whole scan for N patterns (needs rods that stand out in the band); fits become poses to pick."""
+        s = self.frame_state(role)
+        c = self.correction(role)
+        aff = c @ self.raw_affine(role)  # corrected world, so the expected mounting (RAS) can rank the fits
+        lines = loc.merge_lines(loc.find_lines(self.volume(role).data, aff, s["band"]))
+        groups = loc.group_n(lines)
+        ci = np.linalg.inv(c)
         self.checkpoint()
-        f["chosen"] = int(index)
+        s["auto"] = {"lines": [[apply(ci, L["c"] + L["t0"] * L["u"]).tolist(), apply(ci, L["c"] + L["t1"] * L["u"]).tolist()]
+                               for g in groups for L in (lines[i] for i in g)], "fits": [], "chosen": 0, "when": _now()}
+        try:
+            fits = loc.fit(lines, groups, self.frame_model())
+        except ValueError:
+            self.save()  # keep the rods that were found, for the viewer
+            raise
+        s["auto"]["fits"] = [dict(x, matrix=(x["matrix"] @ c).tolist(), rms=round(x["rms"], 3)) for x in fits]
+        self.save()
+        self.frame_pose(role, "auto", index=0)
+
+    def frame_refine(self, role):
+        """Track every rod from the current pose and fit the model to the centres (PLAN D35)."""
+        s = self.frame_state(role)
+        if s.get("pose") is None:
+            raise ValueError("align the expected localizer first (auto-find or by hand)")
+        pose, tracked, res, summ = loc.refine(
+            self.volume(role).data, self.raw_affine(role), self.frame_model(), np.array(s["pose"]), s["band"],
+            manual={k: [np.array(q) for q in v] for k, v in s["manual"].items()}, excluded=s["excluded"])
+        summ["axes"] = loc.describe(pose @ np.linalg.inv(self.correction(role)))
+        summ["rms"] = None if summ["rms"] is None else round(summ["rms"], 3)
+        self.checkpoint()
+        s.update(pose=pose.tolist(), fitted=True, method="tracked", summary=summ, when=_now(), tracked={
+            rid: [[round(t, 2), None if q is None else np.round(q, 3).tolist(), src, None if d is None else round(d, 3)]
+                  for (t, q, src), d in zip(rows, res[rid])] for rid, rows in tracked.items()})
+        if not self._frame().get("use"):
+            self._frame()["use"] = role
         self.save()
 
-    def frame_matrix(self):
-        """CT (orientation-corrected) world -> frame coordinates, or None without a fitted frame."""
-        f = self.subject.get("frame") or {}
-        if not f.get("fits"):
-            return None
-        return np.array(f["fits"][f.get("chosen", 0)]["matrix"], float)
+    def frame_use(self, role):
+        if not self.frame_state(role).get("fitted"):
+            raise ValueError(f"fit the localizer in the {role.upper()} first")
+        self.checkpoint()
+        self._frame()["use"] = role
+        self.save()
+
+    def _frame_used(self):
+        f = self._frame()
+        s = f["scans"].get(f.get("use") or "")
+        return (f["use"], np.array(s["pose"], float)) if s and s.get("fitted") else (None, None)
 
     def frame_from_mri(self):
-        m = self.frame_matrix()
-        return None if m is None or not self.subject.get("coreg") else m @ np.linalg.inv(self.coreg_matrix())
+        """MRI (orientation-corrected) world -> frame coordinates, from the scan chosen for it; None if not fitted."""
+        role, pose = self._frame_used()
+        if role == "mri":
+            return pose @ np.linalg.inv(self.correction("mri"))
+        if role == "ct" and self.subject.get("coreg"):
+            return pose @ np.linalg.inv(self.ct_raw_to_mri())
+        return None
 
-    def frame_file(self):
-        """Viewer overlay in the CT display world: detected rods (1) and the fitted model's rods (2)."""
-        f = self.subject.get("frame") or {}
-        to_disp = self.coreg_matrix() if self.subject.get("coreg") else np.eye(4)
-        segs = [(1, np.array(a), np.array(b)) for a, b in f.get("rods", [])]
-        m = self.frame_matrix()
-        if m is not None:
-            inv = np.linalg.inv(m)
-            segs += [(2, apply(inv, a), apply(inv, b)) for _, a, b in loc.segments(f["model"])]
-        segs = [(v, apply(to_disp, a), apply(to_disp, b)) for v, a, b in segs]
-        if not segs:
-            raise ValueError("no frame detected yet")
-        key = hashlib.sha1(json.dumps([[v, a.tolist(), b.tolist()] for v, a, b in segs]).encode()).hexdigest()[:12]
-        out = self.root / "cache" / f"frame-{key}.nii.gz"
+    def frame_matrix(self):
+        """CT (orientation-corrected) world -> frame coordinates, or None."""
+        role, pose = self._frame_used()
+        if role == "ct":
+            return pose @ np.linalg.inv(self.correction("ct"))
+        m = self.frame_from_mri()
+        return m @ self.coreg_matrix() if m is not None else None
+
+    def frame_agreement(self):
+        """Mean distance (mm) near the brain between the frame fitted in the CT and in the MRI, or None."""
+        sc = self._frame()["scans"]
+        if not all((sc.get(r) or {}).get("fitted") for r in ("ct", "mri")) or not self.subject.get("coreg"):
+            return None
+        a = np.array(sc["mri"]["pose"]) @ np.linalg.inv(self.correction("mri"))
+        b = np.array(sc["ct"]["pose"]) @ np.linalg.inv(self.ct_raw_to_mri())
+        roi = self.subject.get("roi")
+        centre = roi["center"] if roi else apply(self.corrected_affine("mri"), (np.array(self.scan("mri")["shape"]) - 1) / 2)
+        return round(float(register.mean_displacement(a, b, centre, 40.0)), 3)
+
+    def detect_frame(self, threshold=None):  # the 0.1.7 Frame step: CT only
+        if threshold not in (None, ""):
+            self.set_frame_band("ct", [threshold, None])
+        self.frame_autofind("ct")
+
+    def choose_frame(self, index):
+        self.frame_pose("ct", "auto", index=index)
+
+    def frame_file(self, role="ct"):
+        """Viewer overlay in the scan's display world: auto-found rods (1), the model at the current pose (2),
+        tracked rod centres (3) and manual ones (4)."""
+        s = self.frame_state(role)
+        disp = self.display_from_raw(role)
+        segs = [(1, np.array(a), np.array(b)) for a, b in (s.get("auto") or {}).get("lines", [])]
+        if s.get("pose") is not None:
+            ip = np.linalg.inv(np.array(s["pose"]))
+            segs += [(2, apply(ip, r["p0"]), apply(ip, r["p1"])) for r in loc.rod_list(self.frame_model())]
+        dots = [(4 if src == "manual" else 3, np.array(q)) for rows in (s.get("tracked") or {}).values()
+                for _, q, src, _ in rows if q is not None]
+        segs = [(v, apply(disp, a), apply(disp, b)) for v, a, b in segs]
+        dots = [(v, apply(disp, q)) for v, q in dots]
+        if not segs and not dots:
+            raise ValueError("no localizer shown yet: align it or auto-find it")
+        key = hashlib.sha1(json.dumps([[v, a.tolist(), b.tolist()] for v, a, b in segs]
+                                      + [[v, q.tolist()] for v, q in dots]).encode()).hexdigest()[:12]
+        out = self.root / "cache" / f"frame-{role}-{key}.nii.gz"
         if not out.exists():
-            for old in (self.root / "cache").glob("frame-*.nii.gz"):
+            for old in (self.root / "cache").glob(f"frame-{role}-*.nii.gz"):
                 old.unlink()
-            pts = np.vstack([np.vstack([a, b]) for _, a, b in segs])
+            pts = np.vstack([np.vstack([a, b]) for _, a, b in segs] + [q[None] for _, q in dots])
             lo, hi = pts.min(0) - 5, pts.max(0) + 5
-            aff = np.diag([1.0, 1.0, 1.0, 1.0])
+            aff = np.eye(4)
             aff[:3, 3] = lo
             lab = np.zeros(tuple(np.ceil(hi - lo).astype(int) + 1), np.uint8)
-            for v, a, b in segs:
-                n = int(np.linalg.norm(b - a) * 2) + 2
-                vox = np.round(a + np.linspace(0, 1, n)[:, None] * (b - a) - lo).astype(int)
+            items = [(v, a + np.linspace(0, 1, int(np.linalg.norm(b - a) * 2) + 2)[:, None] * (b - a)) for v, a, b in segs]
+            items += [(v, q[None]) for v, q in dots]
+            for v, line in items:
+                vox = np.round(line - lo).astype(int)
                 for d in itertools.product((-1, 0, 1), repeat=3):  # ~3 mm thick for visibility
                     q = np.clip(vox + np.array(d), 0, np.array(lab.shape) - 1)
                     lab[q[:, 0], q[:, 1], q[:, 2]] = np.maximum(lab[q[:, 0], q[:, 1], q[:, 2]], v)
@@ -813,11 +967,13 @@ class Project:
                     raise ValueError("detect the stereotactic frame first, or export in MRI space")
                 for r in rows:
                     r["x"], r["y"], r["z"] = r["frame_x"], r["frame_y"], r["frame_z"]
-                fm = self.subject["frame"]["model"]
+                fm, fr = self.frame_model(), self._frame()
+                used = fr["scans"][fr["use"]]
                 cs = {"iEEGCoordinateSystem": "Other",
                       "iEEGCoordinateSystemDescription": f"Stereotactic frame coordinates ({fm['name']}): "
                       f"{fm.get('axes', '')}; mm. Localizer geometry verified: {bool(fm.get('verified'))}.",
-                      "BrainscopeFrameFit": {k: v for k, v in self.subject["frame"].items() if k != "rods"}}
+                      "BrainscopeFrameFit": {"scan": fr["use"], "model": fm, "agreement_ct_mri_mm": self.frame_agreement()}
+                      | {k: used.get(k) for k in ("band", "method", "summary", "pose")}}
             else:
                 cs = {"iEEGCoordinateSystem": "Other",
                       "iEEGCoordinateSystemDescription": "World coordinates (RAS+, mm) of the orientation-corrected "
@@ -961,15 +1117,27 @@ class Project:
                          | {"contacts": [r for r in contacts if r["lead"] == L["name"]], "plan_result": pr_})
         am = self.acpc_matrix()
         a = sub.get("acpc") or {}
-        fr = sub.get("frame") or {}
-        fm = self.frame_matrix() if scans.get("ct") else None
-        disp = fm @ np.linalg.inv(self.coreg_matrix()) if fm is not None and sub.get("coreg") else fm
+        fr = self._frame()
+        disp = self.frame_from_mri()
+        if disp is None and fr.get("use") == "ct":  # not coregistered yet: the viewer shows the CT in its own world
+            disp = self.frame_matrix()
+        frame_scans = {}
+        for r, s in fr["scans"].items():
+            if not scans.get(r):
+                continue
+            frame_scans[r] = {k: s.get(k) for k in ("band", "fitted", "method", "summary", "when")} | {
+                "auto": {"fits": (s.get("auto") or {}).get("fits", []), "chosen": (s.get("auto") or {}).get("chosen", 0),
+                         "n_lines": len((s.get("auto") or {}).get("lines", []))},
+                "manual": sum(len(v) for v in (s.get("manual") or {}).values()),
+                "excluded": sum(len(v) for v in (s.get("excluded") or {}).values()),
+                "display_to_frame": (np.array(s["pose"]) @ np.linalg.inv(self.display_from_raw(r))).tolist()
+                if s.get("pose") is not None else None}
         return {"name": self.root.name, "species": sub["species"], "scans": scans, "coreg": sub.get("coreg"),
                 "roi": sub.get("roi"), "acpc": sub.get("acpc"), "acpc_matrix": am.tolist() if am is not None else None,
                 "acpc_distance": round(float(np.linalg.norm(np.subtract(a["ac"], a["pc"]))), 2)
                 if "ac" in a and "pc" in a else None,
-                "frame": {k: v for k, v in fr.items() if k != "rods"} | {"model": self.frame_model(),
-                                                                         "n_rods": len(fr.get("rods", []))},
+                "frame": {"model": self.frame_model(), "use": fr.get("use"), "scans": frame_scans,
+                          "agreement": self.frame_agreement()},
                 "frame_from_display": disp.tolist() if disp is not None else None, "brain": sub.get("brain"),
                 "leads": leads, "can_undo": bool(self.undo_stack), "can_redo": bool(self.redo_stack),
                 "folder": str(self.root)}

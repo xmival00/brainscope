@@ -6,8 +6,12 @@ in different planes already determine all six degrees of freedom.
 
 Steps: thin bright structures are found in the CT (at about 1 mm), straight segments are extracted (RANSAC), grouped
 into N patterns (two parallel lines and a coplanar oblique one), and the model is fitted by rigid point-to-rod
-matching (ICP), trying all 24 axis-aligned mountings and all usable plate subsets. Result: a rigid 4x4 from the CT's
-(orientation-corrected) world to frame coordinates, with the residual per plate.
+matching (ICP), trying all 24 axis-aligned mountings and all usable plate subsets. Result: a rigid 4x4 from the
+image world to frame coordinates, with the residual per plate.
+
+Tracking (low-contrast rods, CT or MRI): from a rough pose, each expected rod is followed in planes perpendicular to it
+(`track`), the model is fitted to those centres with fixed rod correspondence (`fit_tracked`); `refine` alternates
+both. Voxels count as rod when their value is inside an intensity band (from, to).
 """
 from __future__ import annotations
 
@@ -18,6 +22,7 @@ import numpy as np
 from scipy import ndimage
 
 from . import orientation as ori
+from .detect import Axis, _planes, _sample
 from .transforms import apply
 
 DEFAULT_MODEL = {
@@ -93,8 +98,26 @@ def segments(model, plates=None):
     return out
 
 
+def rod_list(model):
+    """[{id, plate, p0, p1}] for the enabled plates (frame mm); ids '<plate>-1', '<plate>-2' (parallel), '<plate>-d'."""
+    out = []
+    for p in model["plates"]:
+        if p.get("enabled", True):
+            for (name, a, b), k in zip(segments(model, [p["name"]]), ("1", "2", "d")):
+                out.append({"id": f"{name}-{k}", "plate": name, "p0": a, "p1": b})
+    return out
+
+
+def band_of(band):
+    """(from, to) from a band [from, to] (to may be None: no upper limit) or a single threshold."""
+    if band is None or np.isscalar(band):
+        return float(band if band is not None else -np.inf), np.inf
+    lo, hi = band
+    return float(lo), (np.inf if hi is None else float(hi))
+
+
 # ---- detection ----
-def _maxpool(data, affine, target_mm):
+def _maxpool(data, affine, target_mm, band=None):
     sp = np.sqrt((affine[:3, :3] ** 2).sum(0))
     f = np.maximum(1, np.round(target_mm / sp).astype(int))
     n = np.array(data.shape) // f
@@ -103,6 +126,8 @@ def _maxpool(data, affine, target_mm):
     for z0 in range(0, n[2] * f[2], step):
         z1 = min(z0 + step, n[2] * f[2])
         blk = np.asarray(data[:n[0] * f[0], :n[1] * f[1], z0:z1], np.float32)
+        if band is not None:  # voxels outside the band do not count
+            blk = np.where((blk >= band[0]) & (blk <= band[1]), blk, -np.inf)
         out[:, :, z0 // f[2]:z1 // f[2]] = blk.reshape(n[0], f[0], n[1], f[1], (z1 - z0) // f[2], f[2]).max((1, 3, 5))
     scale = np.diag(list(f) + [1]).astype(float)
     scale[:3, 3] = (f - 1) / 2
@@ -137,10 +162,11 @@ def _ransac_lines(pts, rng, tol=1.5, min_len=30.0, max_lines=4, iters=150):
     return lines
 
 
-def find_lines(data, affine, threshold, voxel_mm=1.0, seed=0):
-    """Straight thin bright segments (rods) in the image; world coordinates of `affine`."""
-    d, aff = _maxpool(data, affine, voxel_mm)
-    lab, n = ndimage.label(d > threshold, structure=np.ones((3, 3, 3)))
+def find_lines(data, affine, band, voxel_mm=1.0, seed=0):
+    """Straight thin segments (rods) of voxels inside the intensity band; world coordinates of `affine`."""
+    band = band_of(band)
+    d, aff = _maxpool(data, affine, voxel_mm, band)
+    lab, n = ndimage.label(d >= band[0], structure=np.ones((3, 3, 3)))
     if n == 0:
         return []
     sizes = np.bincount(lab.ravel())
@@ -304,11 +330,129 @@ def fit(lines, groups, model, keep=3):
     return distinct
 
 
-def detect(data, affine, model, threshold):
+def detect(data, affine, model, band):
     """Lines, N groups and the best fits (image world of `affine` -> frame coordinates)."""
-    lines = merge_lines(find_lines(data, affine, threshold))
+    lines = merge_lines(find_lines(data, affine, band))
     groups = group_n(lines)
     return lines, groups, fit(lines, groups, model)
+
+
+# ---- tracking from a rough pose ----
+def track(data, affine, model, pose, band, step=1.0, search_mm=5.0, max_diam_mm=10.0, manual=None, excluded=None):
+    """Centre of each rod in planes perpendicular to where the model at `pose` (image world -> frame) puts it.
+
+    Returns {rod id: [[tau, point or None, source]]}: tau = mm along the model rod (frame), point in image world,
+    source 'auto', 'manual', 'missing' or 'excluded'. `manual` {rod id: [image world points]} replaces the automatic
+    centre of the nearest slice; `excluded` {rod id: [tau]} drops slices."""
+    lo, hi = band_of(band)
+    inv, ipose = np.linalg.inv(affine), np.linalg.inv(pose)
+    h = float(np.clip(np.sqrt((affine[:3, :3] ** 2).sum(0)).min() / 2, 0.2, 0.5))
+    radius = search_mm + max_diam_mm / 2
+    cval = lo - 1.0 if np.isfinite(lo) else float(np.min(data)) - 1.0
+    out = {}
+    for rod in rod_list(model):
+        length = float(np.linalg.norm(rod["p1"] - rod["p0"]))
+        axis = Axis.line(apply(ipose, rod["p0"]), apply(ipose, rod["p1"]))
+        taus = np.arange(0.0, length + 1e-9, step)
+        pts, ga, gb = _planes(axis, taus, radius, h)
+        img = _sample(data, inv, pts, cval)
+        r = np.hypot(ga, gb)
+        edge = r > radius - 1.5 * h
+        _, e1, e2 = axis.frame(taus)
+        skip = {int(round(t / step)) for t in (excluded or {}).get(rod["id"], [])}
+        rows = []
+        for k, t in enumerate(taus):
+            if k in skip:
+                rows.append([float(t), None, "excluded"])
+                continue
+            lab, n = ndimage.label((img[k] >= lo) & (img[k] <= hi) & (r <= radius))
+            best = None
+            for j, sl in enumerate(ndimage.find_objects(lab), start=1):
+                sel = lab[sl] == j
+                a_, b_ = ga[sl][sel], gb[sl][sel]
+                if edge[sl][sel].any() or len(a_) < 2:  # reaches the window edge: a plate or bone, not a rod
+                    continue
+                if np.sqrt(12 * np.linalg.eigvalsh(np.cov(np.stack([a_, b_])))[-1]) > max_diam_mm:
+                    continue  # too long across: not a rod section
+                ca, cb = a_.mean(), b_.mean()
+                d = np.hypot(ca, cb)
+                if d <= search_mm and (best is None or d < best[0]):
+                    best = (d, ca, cb)
+            if best is None:
+                rows.append([float(t), None, "missing"])
+            else:
+                rows.append([float(t), axis.point(t) + best[1] * e1[k] + best[2] * e2[k], "auto"])
+        d = (rod["p1"] - rod["p0"]) / length
+        for p in (manual or {}).get(rod["id"], []):
+            t = float((apply(pose, p) - rod["p0"]) @ d)
+            k = int(round(t / step))
+            if 0 <= k < len(rows) and rows[k][2] != "excluded":
+                rows[k] = [t, np.asarray(p, float), "manual"]
+            elif not 0 <= k < len(rows):
+                rows.append([t, np.asarray(p, float), "manual"])
+        out[rod["id"]] = rows
+    return out
+
+
+def residuals(tracked, model, pose):
+    """Distance (mm) of every tracked centre from its rod at `pose`, as {rod id: [distance or None]}."""
+    rods = {r["id"]: r for r in rod_list(model)}
+    out = {}
+    for rid, rows in tracked.items():
+        a, b = rods[rid]["p0"], rods[rid]["p1"]
+        d = (b - a) / np.linalg.norm(b - a)
+        out[rid] = [None if p is None else float(np.linalg.norm((q := apply(pose, p) - a) - (q @ d) * d))
+                    for _, p, _ in rows]
+    return out
+
+
+def fit_tracked(tracked, model, pose, iters=200):
+    """Rigid image->frame fit of tracked centres to their own rods (fixed correspondence), from `pose`."""
+    rods = {r["id"]: r for r in rod_list(model)}
+    pts, a, d, plates = [], [], [], set()
+    for rid, rows in tracked.items():
+        for _, p, _ in rows:
+            if p is not None:
+                r = rods[rid]
+                pts.append(p)
+                a.append(r["p0"])
+                d.append((r["p1"] - r["p0"]) / np.linalg.norm(r["p1"] - r["p0"]))
+                plates.add(r["plate"])
+    if len(plates) < 2 or len(pts) < 20:
+        raise ValueError(f"rod centres found on {len(plates)} plate(s) ({len(pts)} points); at least 2 plates needed: "
+                         "check the rough alignment and the intensity band")
+    pts, a, d = np.array(pts, float), np.array(a), np.array(d)
+    r, t = pose[:3, :3].copy(), pose[:3, 3].copy()
+    for _ in range(iters):
+        q = pts @ r.T + t
+        c = a + ((q - a) * d).sum(1)[:, None] * d
+        dist = np.linalg.norm(q - c, axis=1)
+        keep = dist <= max(2.0, 3 * np.median(dist))  # outliers (a wrong blob) do not pull the fit
+        r2, t2 = _kabsch(pts[keep], c[keep])
+        done = np.allclose(r2, r, atol=1e-8) and np.allclose(t2, t, atol=1e-6)
+        r, t = r2, t2
+        if done:
+            break
+    m = np.eye(4)
+    m[:3, :3], m[:3, 3] = r, t
+    return m
+
+
+def refine(data, affine, model, pose, band, rounds=3, **kw):
+    """Alternate tracking and fitting from a rough pose. Returns (pose, tracked, residuals, summary)."""
+    pose = np.asarray(pose, float)
+    for _ in range(rounds):
+        pose = fit_tracked(track(data, affine, model, pose, band, **kw), model, pose)
+    tracked = track(data, affine, model, pose, band, **kw)
+    res = residuals(tracked, model, pose)
+    per, alld = {}, []
+    for rid, rows in tracked.items():
+        ds = [x for x in res[rid] if x is not None]
+        alld += ds
+        per[rid] = {"rms": round(float(np.sqrt(np.mean(np.square(ds)))), 3) if ds else None, "found": len(ds),
+                    "slices": len(rows)}
+    rms = float(np.sqrt(np.mean(np.square(alld)))) if alld else None
+    return pose, tracked, res, {"rms": rms, "rods": per, "axes": describe(pose)}
 
 
 def render(data, affine, segs_world, radius=1.0, value=1500.0):
