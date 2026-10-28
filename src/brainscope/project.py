@@ -1132,6 +1132,10 @@ class Project:
                 "excluded": sum(len(v) for v in (s.get("excluded") or {}).values()),
                 "display_to_frame": (np.array(s["pose"]) @ np.linalg.inv(self.display_from_raw(r))).tolist()
                 if s.get("pose") is not None else None}
+            if s.get("pose") is not None:  # where each rod of the model is, in the viewer (to go to a rod)
+                to_disp = self.display_from_raw(r) @ np.linalg.inv(np.array(s["pose"]))
+                frame_scans[r]["rods"] = {d["id"]: [np.round(apply(to_disp, d["p0"]), 2).tolist(), np.round(apply(to_disp, d["p1"]), 2).tolist()]
+                                          for d in loc.rod_list(fr["model"])}
         return {"name": self.root.name, "species": sub["species"], "scans": scans, "coreg": sub.get("coreg"),
                 "roi": sub.get("roi"), "acpc": sub.get("acpc"), "acpc_matrix": am.tolist() if am is not None else None,
                 "acpc_distance": round(float(np.linalg.norm(np.subtract(a["ac"], a["pc"]))), 2)

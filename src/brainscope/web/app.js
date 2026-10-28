@@ -73,7 +73,7 @@ function updateCoords() {
     const q = [0, 1, 2].map((i) => a[i][0] * m[0] + a[i][1] * m[1] + a[i][2] * m[2] + a[i][3]);
     t += `   AC/PC  x ${fmt(q[0], 1)}  y ${fmt(q[1], 1)}  z ${fmt(q[2], 1)}`;
   }
-  const fd = S.p?.frame_from_display;
+  const fd = S.step === 'frame' && S.p ? S.p.frame?.scans?.[frameScan()]?.display_to_frame : S.p?.frame_from_display;
   if (m && fd && S.step !== 'orient') { const q = xf(fd, m); t += `   frame  X ${fmt(q[0], 1)}  Y ${fmt(q[1], 1)}  Z ${fmt(q[2], 1)}`; }
   $('#coords').textContent = t;
 }
@@ -104,6 +104,12 @@ function wantedVolumes() {
     const r = S.orientRole;
     if (p.scans[r]) out.push({ role: r, colormap: 'gray', ...(r === 'ct' ? { cal_min: ctLevels().orient[0], cal_max: ctLevels().orient[1] } : {}) });
     return out;
+  }
+  if (S.step === 'frame') {  // the scan the localizer is found in, alone
+    const r = frameScan();
+    if (!r) return [];
+    const w = ctLevels().base_bone;
+    return [r === 'ct' ? { role: 'ct', colormap: 'gray', cal_min: w[0], cal_max: w[1] } : { role: 'mri', colormap: 'gray' }];
   }
   if (S.step === 'brain' && S.layout === 'render' && p.brain) return [];  // 3D: brain and lead surfaces only
   if (S.step === 'acpc' || S.step === 'brain') return p.scans.mri ? [{ role: 'mri', colormap: 'gray' }] : [];  // MRI alone, full resolution
@@ -153,11 +159,12 @@ function extraLayers() {  // label overlays on the MRI grid: contacts (leads, ex
     out.push({ key: `b${bk}`, url: `${P('/brain/brain_mask.nii.gz')}?v=${bk}`, name: `brainmask-${bk}.nii.gz`,
       opacity: 0.3, cm: { R: [0, 255], G: [0, 120], B: [0, 160], A: [0, 255], I: [0, 1], labels: ['', 'brain'] } });  // the MRI stays readable
   }
-  const fr = S.p.frame || {};
-  if (S.step === 'frame' && fr.n_rods) {
-    const fk = hkey([fr.when, fr.chosen, S.p.coreg?.ct_to_mri]);
-    out.push({ key: `f${fk}`, url: `${P('/vol/frame.nii.gz')}?v=${fk}`, name: `frame-${fk}.nii.gz`,
-      cm: { R: [0, 255, 60], G: [0, 210, 220], B: [0, 40, 255], A: [0, 255, 255], I: [0, 1, 2], labels: ['', 'detected rods', 'fitted model'] } });
+  const fs = S.step === 'frame' && frameScan() ? S.p.frame?.scans?.[frameScan()] : null;
+  if (fs && (fs.display_to_frame || fs.auto?.n_lines)) {  // auto-found rods, the model where it is now, rod centres
+    const fk = hkey([frameScan(), fs.display_to_frame, fs.when, fs.auto?.n_lines, fs.manual, fs.excluded]);
+    out.push({ key: `f${fk}`, url: `${P('/vol/frame.nii.gz')}?scan=${frameScan()}&v=${fk}`, name: `frame-${fk}.nii.gz`,
+      cm: { R: [0, 255, 60, 70, 255], G: [0, 210, 220, 230, 80], B: [0, 40, 255, 110, 220], A: [0, 255, 255, 255, 255], I: [0, 1, 2, 3, 4],
+        labels: ['', 'auto-found rods', 'localizer model', 'rod centres', 'manual centres'] } });
   }
   if (S.step === 'coreg' && S.p.roi && S.p.scans.mri) {
     const rk = hkey([S.p.roi, scanKey('mri')]);
@@ -198,6 +205,7 @@ async function refreshViewer() {
       S.loaded.contacts = ek;
     }
   } catch (e) { toast(`Viewer: ${e.message}`, 'error'); }
+  syncBand();
   await syncMeshes();
   $('#ctCtl').style.visibility = vols.length > 1 ? 'visible' : 'hidden';
   syncWindow(vols);
@@ -219,6 +227,29 @@ async function syncMeshes() {  // brain surface and lead meshes, shown in the br
   }
   if (!list.length) { while (nv.meshes.length) nv.removeMesh(nv.meshes[0]); nv.drawScene(); return; }  // loadMeshes([]) keeps the old ones
   try { await nv.loadMeshes(list); } catch (e) { toast(`Viewer: ${e.message}`, 'error'); }
+}
+const BAND_CM = { R: [255, 255, 255, 255, 255, 255], G: [50, 50, 50, 50, 50, 50], B: [50, 50, 50, 50, 50, 50],
+  A: [0, 0, 255, 255, 0, 0], I: [0, 84, 85, 170, 171, 255] };  // only the middle third is drawn
+function syncBand() {  // frame step: voxels inside the intensity band in red, on a copy of the scan (no server round trip)
+  const old = nv.volumes.find((v) => v._band), base = nv.volumes[0];
+  const s = S.step === 'frame' && S.fmShowBand !== false && base && !base._band ? S.p?.frame?.scans?.[frameScan()] : null;
+  const b = s ? S.fmBand || s.band : null;
+  if (!b) { if (old) nv.removeVolume(old); return; }
+  let v = old;
+  if (!v) {
+    if (!S.bandCm) { nv.addColormap('brainscope-band', BAND_CM); S.bandCm = true; }
+    v = base.clone(); v._band = true;
+    nv.addVolume(v);
+    nv.setColormap(v.id, 'brainscope-band');
+  }
+  const lo = b[0], hi = b[1] ?? base.global_max, w = Math.max(hi - lo, 1e-3);
+  [['#fmLo', lo], ['#fmHi', hi]].forEach(([id, x]) => {  // slider range = the scan's range (known once it is loaded)
+    const el = $(id);
+    if (el && document.activeElement !== el) { el.min = Math.floor(base.global_min); el.max = Math.ceil(base.global_max); el.value = x; }
+  });
+  v.cal_min = lo - w; v.cal_max = hi + w;  // the band is the middle third of the colour map
+  v.opacity = 0.75;
+  nv.updateGLVolume();
 }
 function syncSliders() {  // slice position sliders follow the crosshair
   const c = nv.volumes.length ? nv.scene.crosshairPos : null;
@@ -250,15 +281,10 @@ async function openProject(name) {
   if (!name) { S.p = null; S.lead = null; render(); refreshViewer(); return; }
   await busy('Opening subject…', async () => { await setProject(await api(`/api/p/${encodeURIComponent(name)}`)); });
 }
-function frameCompat(p) {  // the current Frame step reads the CT fit in its earlier shape (until the new Frame step, PLAN D33-D36)
-  const ct = p.frame?.scans?.ct;
-  if (ct) Object.assign(p.frame, { fits: ct.auto.fits, chosen: ct.auto.chosen, threshold: ct.band?.[0], n_rods: ct.auto.n_lines });
-}
 async function setProject(p) {
   const changed = S.p?.name !== p.name;
-  frameCompat(p);
   S.p = p;
-  if (changed) { S.lead = null; S.contact = null; S.view = null; S.loaded = { base: null, contacts: null }; S.win = { mri: null, ct: null }; S.align = { ct: null, mri: null }; S.brainParams = null; S.brainExport = null; S.step = firstOpenStep(); }
+  if (changed) { S.lead = null; S.contact = null; S.view = null; S.loaded = { base: null, contacts: null }; S.win = { mri: null, ct: null }; S.align = { ct: null, mri: null }; S.brainParams = null; S.brainExport = null; S.fmScan = null; S.fmBand = null; S.step = firstOpenStep(); }
   if (S.lead && !p.leads.some((l) => l.name === S.lead)) { S.lead = null; S.view = null; }
   $('#projectSelect').value = p.name;
   $('#projectFolder').textContent = p.folder; $('#projectFolder').title = p.folder;
@@ -310,7 +336,7 @@ function stepStatus(step) {
     case 'orient': return sc.mri?.left_confirmed && sc.ct?.left_confirmed ? 'done' : (sc.mri || sc.ct ? 'warn' : 'todo');
     case 'coreg': return p.coreg?.accepted ? 'done' : (p.coreg ? 'warn' : 'todo');
     case 'acpc': return p.acpc_matrix ? 'done' : (p.acpc ? 'warn' : 'todo');
-    case 'frame': return p.frame?.fits?.length ? (p.frame.model.verified ? 'done' : 'warn') : 'todo';
+    case 'frame': return p.frame?.use ? (p.frame.model.verified ? 'done' : 'warn') : 'todo';
     case 'targets': return p.leads.some((l) => l.plan) ? 'done' : 'todo';
     case 'brain': return p.brain ? 'done' : 'todo';
     case 'leads': return p.leads.length ? 'done' : 'todo';
@@ -631,13 +657,58 @@ function describeAxes(r) {  // rows of a frame rotation (frame axes in RAS) -> e
   return ['X', 'Y', 'Z'].map((ax, i) => { const row = r[i].slice(0, 3), k = row.map(Math.abs).indexOf(Math.max(...row.map(Math.abs)));
     return `${ax}→${row[k] > 0 ? n[k][0] : n[k][1]}`; }).join(', ');
 }
+function frameScan() {  // the scan the localizer is being found in
+  const sc = S.p?.scans || {};
+  if (S.fmScan && sc[S.fmScan]) return S.fmScan;
+  const u = S.p?.frame?.use;
+  S.fmScan = u && sc[u] ? u : sc.ct ? 'ct' : sc.mri ? 'mri' : null;
+  return S.fmScan;
+}
 function frameHTML() {
-  const f = S.p.frame || {}, m = f.model, fits = f.fits || [], ready = !!S.p.scans.ct;
-  const num = (i, k, v) => `<input type="number" step="any" data-pf="${i}.${k}" value="${v}" style="width:52px">`;
+  const f = S.p.frame || {}, m = f.model, r = frameScan();
+  if (!r) return '<h2>Stereotactic frame</h2><p class="muted">Import the CT or the MRI with the localizer first.</p>';
+  const s = f.scans?.[r] || {}, sum = s.summary, fits = s.auto?.fits || [], band = S.fmBand || s.band || [0, null];
+  const v = nv.volumes.find((x) => !x._band && x.name?.startsWith(`${r}-`)), lo = v ? Math.floor(v.global_min) : -1024, hi = v ? Math.ceil(v.global_max) : 3071;
+  const num = (i, k, x) => `<input type="number" step="any" data-pf="${i}.${k}" value="${x}" style="width:52px">`;
+  const chip = (k) => { const t = f.scans?.[k]; return !S.p.scans[k] ? '' : t?.fitted ? ` <span class="small mono">${fmt(t.summary?.rms, 2)} mm</span>` : ''; };
+  const fitted = ['ct', 'mri'].filter((k) => f.scans?.[k]?.fitted);
+  const rods = sum?.rods ? Object.entries(sum.rods) : [];
   return `<h2>Stereotactic frame</h2>
-  <p>Finds the N-bar localizer (two or three plates) in the CT; every contact, AC/PC and plan then also get frame coordinates.</p>
-  <div class="card"><div class="row"><b>${esc(m.name)}</b><span class="spacer"></span>
-    <span class="badge ${m.verified ? 'ok' : 'warn'}">${m.verified ? 'geometry verified' : 'geometry not verified'}</span></div>
+  <p>Find the N-bar localizer in the CT or the MRI; contacts, AC/PC and plans then also get frame coordinates.</p>
+  <div class="row"><label>scan</label><span class="seg" id="fmScan">${['ct', 'mri'].map((k) => `<button data-fs="${k}" class="${k === r ? 'on' : ''}" ${S.p.scans[k] ? '' : 'disabled'}>${k.toUpperCase()}${chip(k)}</button>`).join('')}</span></div>
+  <div class="card"><b>1 · What counts as rod</b>
+    <p class="muted small">Pick the intensity band so the rods light up red and the plates and bone do not. In the CT the rods can be only
+    slightly brighter, or darker (fluid in plastic), than the plate around them.</p>
+    <div class="row"><label>from</label><input type="range" id="fmLo" min="${lo}" max="${hi}" step="any" value="${band[0]}" style="flex:1">
+      <input type="number" id="fmLoN" step="any" value="${fmt(band[0], 0)}" style="width:72px"></div>
+    <div class="row"><label>to</label><input type="range" id="fmHi" min="${lo}" max="${hi}" step="any" value="${band[1] ?? hi}" style="flex:1" ${band[1] == null ? 'disabled' : ''}>
+      <input type="number" id="fmHiN" step="any" value="${band[1] == null ? '' : fmt(band[1], 0)}" placeholder="no limit" style="width:72px"></div>
+    <div class="row small"><label class="row"><input type="checkbox" id="fmOpen" ${band[1] == null ? 'checked' : ''}> no upper limit</label>
+      <label class="row"><input type="checkbox" id="fmShow" ${S.fmShowBand !== false ? 'checked' : ''}> show band in red</label></div></div>
+  <div class="card"><b>2 · Place the localizer</b>
+    <p class="muted small">Cyan: where the localizer model is now. Find it automatically, or put it on the rods by hand (roughly, within a few mm).</p>
+    <div class="row"><button id="fmAuto" class="primary">Auto-find</button><button id="fmPlace" title="Move the model's centre to the crosshair">Centre at crosshair</button>
+      <button id="fmPoseReset" class="ghost" title="Expected mounting, centred on the scan">Reset</button></div>
+    <div class="row"><label>turn 90°</label>${[['x', 'L–R'], ['y', 'A–P'], ['z', 'S–I']].map(([k, n]) => `<button data-fturn="${k}" title="Turn the model 90° about the ${n} axis (Shift: the other way)">${n}</button>`).join('')}</div>
+    <div class="row"><label>step</label><select id="fmMm">${[0.5, 1, 2, 5, 10].map((x) => `<option ${x === (S.fmMm ?? 2) ? 'selected' : ''}>${x}</option>`).join('')}</select> mm
+      <select id="fmDeg">${[0.5, 1, 2, 5].map((x) => `<option ${x === (S.fmDeg ?? 1) ? 'selected' : ''}>${x}</option>`).join('')}</select> °</div>
+    ${[['L–R', 0], ['A–P', 1], ['S–I', 2]].map(([n, i]) => `<div class="row"><label>${n}</label><button data-fmove="${i}" data-s="-1">−</button><button data-fmove="${i}" data-s="1">+</button>
+      <span class="muted small" style="margin-left:6px">rotate</span><button data-frot="${i}" data-s="-1">↺</button><button data-frot="${i}" data-s="1">↻</button></div>`).join('')}
+    ${fits.length > 1 ? `<p class="small">Auto-find candidates (best first):</p>${fits.map((x, i) => `<label class="row small"><input type="radio" name="fmFit" value="${i}" ${i === s.auto.chosen && s.method === 'auto' ? 'checked' : ''}>
+      <span><b>${esc(x.axes)}</b> · ${fmt(x.rms, 2)} mm</span></label>`).join('')}` : ''}</div>
+  <div class="card"><b>3 · Follow the rods and fit</b>
+    <p class="muted small">Each rod is followed slice by slice near the model and the model is fitted to the rod centres (green).</p>
+    <div class="row"><button class="primary" id="fmTrack" ${s.display_to_frame ? '' : 'disabled'}>Track rods and fit</button></div>
+    ${sum ? `<div class="kv"><span>status</span><span>${s.fitted ? `<span class="badge ok">fitted (${esc(s.method)})</span>` : '<span class="badge warn">placed by hand, not fitted</span>'}</span>
+      <span>residual</span><span>${fmt(sum.rms, 2)} mm</span><span>frame axes</span><span>${esc(sum.axes || '–')}</span></div>
+      ${sum.rms > 1 ? '<p class="small" style="color:var(--bad)">Residual over 1 mm: check the band, the placement and the localizer model.</p>' : ''}
+      ${rods.length ? `<table class="contacts"><tr><th>rod</th><th>found</th><th>residual</th><th></th></tr>${rods.map(([id, x]) =>
+        `<tr><td>${esc(id)}</td><td class="${x.found < 0.6 * x.slices ? 'bad' : ''}">${x.found}/${x.slices}</td><td>${x.rms == null ? '–' : `${fmt(x.rms, 2)} mm`}</td>
+        <td><button class="ghost" data-frod="${esc(id)}">go</button></td></tr>`).join('')}</table>` : ''}` : ''}</div>
+  ${fitted.length ? `<div class="card"><b>Frame coordinates from</b>
+    ${fitted.map((k) => `<label class="row small"><input type="radio" name="fmUse" value="${k}" ${f.use === k ? 'checked' : ''}> ${k.toUpperCase()} (${fmt(f.scans[k].summary?.rms, 2)} mm)</label>`).join('')}
+    ${f.agreement != null ? `<p class="small">CT and MRI fits differ by <b>${fmt(f.agreement, 2)} mm</b> near the brain (includes the coregistration error).</p>` : ''}</div>` : ''}
+  <details class="card"><summary><b>Localizer model</b> · ${esc(m.name)} <span class="badge ${m.verified ? 'ok' : 'warn'}">${m.verified ? 'geometry verified' : 'geometry not verified'}</span></summary>
     <p class="muted small">${esc(m.axes)}</p>
     ${m.verified ? '' : `<p class="small" style="color:var(--warn)">${esc(m.note || 'Check the rod geometry against your localizer before relying on frame coordinates.')}</p>`}
     <div style="overflow-x:auto"><table class="contacts"><tr><th>use</th><th>plate</th><th>axis</th><th>at</th><th>rod 1</th><th>rod 2</th><th>z from</th><th>z to</th><th>diagonal from (h, z)</th><th>to (h, z)</th></tr>
@@ -651,18 +722,8 @@ function frameHTML() {
     position (Y or X); diagonal end points as (horizontal, Z). Expected mounting: <b>${describeAxes(m.mount)}</b> (frame axes in the subject).</p>
     <label class="row small"><input type="checkbox" id="fmVerified" ${m.verified ? 'checked' : ''}> This geometry was checked against our localizer</label>
     <div class="row"><button id="fmSave">Save model</button><button id="fmReset" class="ghost">Default</button>
-      <button id="fmExport" class="ghost">Export JSON</button><button id="fmImport" class="ghost">Import JSON…</button></div></div>
-  <div class="card"><b>Detect in the CT</b>
-    <div class="row"><label>threshold</label><input type="number" id="fmThr" value="${f.threshold ?? ''}" placeholder="auto" style="width:90px">
-      <span class="muted small">rods brighter than this</span><span class="spacer"></span>
-      <button class="primary" id="fmDetect" ${ready ? '' : 'disabled'}>Detect frame</button></div>
-    ${fits.length ? `<p class="small">${f.n_rods} rods in ${f.n_rods / 3} N-plates found. Fits (best first):</p>
-      ${fits.map((x, i) => `<label class="row small"><input type="radio" name="fmFit" value="${i}" ${i === (f.chosen || 0) ? 'checked' : ''}>
-        <span><b>${esc(x.axes)}</b> · residual ${fmt(x.rms, 2)} mm · ${Object.entries(x.plates).map(([n, v]) => `${esc(n)} ${fmt(v.rms, 2)} mm`).join(', ')}</span></label>`).join('')}
-      ${fits[f.chosen || 0].rms > 1 ? '<p class="small" style="color:var(--bad)">Poor fit (residual over 1 mm): check the model or the threshold.</p>' : ''}
-      <div class="row"><button id="fmMount" class="ghost" title="Prefer this orientation when fits are equally good (e.g. animals)">Use this orientation as expected mounting</button></div>
-      <p class="muted small">Yellow: detected rods. Cyan: the fitted model. They should overlap.</p>` : '<p class="muted small">Not detected yet.</p>'}
-  </div>
+      <button id="fmExport" class="ghost">Export JSON</button><button id="fmImport" class="ghost">Import JSON…</button>
+      ${s.display_to_frame ? '<button id="fmMount" class="ghost" title="Prefer the current orientation when fits are equally good (e.g. animals)">Current orientation as expected mounting</button>' : ''}</div></details>
   <div class="row"><span class="spacer"></span><button class="primary" id="next">Next: leads</button></div>`;
 }
 function readFrameModel() {
@@ -678,6 +739,45 @@ function readFrameModel() {
   return m;
 }
 function bindFrame() {
+  const r = frameScan();
+  if (!r) return;
+  $$('[data-fs]').forEach((b) => { b.onclick = () => { S.fmScan = b.dataset.fs; S.fmBand = null; render(); refreshViewer(); }; });
+  const pose = (body, text) => act('/frame-pose', { scan: r, ...body }, text);
+  // band: live preview while dragging, saved (undoable) on release
+  const band = () => [Number($('#fmLoN').value), $('#fmOpen').checked || $('#fmHiN').value === '' ? null : Number($('#fmHiN').value)];
+  const live = (src) => {
+    if (src === 'lo') $('#fmLoN').value = fmt(Number($('#fmLo').value), 0);
+    if (src === 'hi') $('#fmHiN').value = fmt(Number($('#fmHi').value), 0);
+    S.fmBand = band(); requestAnimationFrame(syncBand);
+  };
+  const save = () => { S.fmBand = band(); act('/frame-band', { scan: r, band: S.fmBand }).then(() => { S.fmBand = null; }); };
+  $('#fmLo').oninput = () => live('lo'); $('#fmHi').oninput = () => live('hi');
+  $('#fmLo').onchange = save; $('#fmHi').onchange = save; $('#fmLoN').onchange = save; $('#fmHiN').onchange = save;
+  $('#fmOpen').onchange = (e) => {
+    if (!e.target.checked && $('#fmHiN').value === '') $('#fmHiN').value = fmt(nv.volumes[0]?.global_max ?? 3071, 0);
+    save();
+  };
+  $('#fmShow').onchange = (e) => { S.fmShowBand = e.target.checked; syncBand(); };
+  // placing the model
+  $('#fmAuto').onclick = async () => {
+    if (!(await act('/frame-autofind', { scan: r }, `Searching the ${r.toUpperCase()} for the localizer rods…`)))
+      await setProject(await api(P('')));  // keeps what was found, for the viewer
+  };
+  $('#fmPlace').onclick = () => { const c = crosshairMM(); if (c) pose({ op: 'place', point: c }); };
+  $('#fmPoseReset').onclick = () => pose({ op: 'reset' });
+  $$('[data-fturn]').forEach((b) => { b.onclick = (e) => pose({ op: 'turn', axis: b.dataset.fturn, deg: e.shiftKey ? -90 : 90 }); });
+  $('#fmMm').onchange = (e) => { S.fmMm = Number(e.target.value); };
+  $('#fmDeg').onchange = (e) => { S.fmDeg = Number(e.target.value); };
+  $$('[data-fmove]').forEach((b) => { b.onclick = () => { const t = [0, 0, 0]; t[b.dataset.fmove] = (S.fmMm ?? 2) * b.dataset.s; pose({ op: 'nudge', move: t }); }; });
+  $$('[data-frot]').forEach((b) => { b.onclick = () => { const t = [0, 0, 0]; t[b.dataset.frot] = (S.fmDeg ?? 1) * b.dataset.s; pose({ op: 'nudge', rot: t }); }; });
+  $$('[name="fmFit"]').forEach((el) => { el.onchange = () => pose({ op: 'auto', index: Number(el.value) }); });
+  $('#fmTrack').onclick = () => act('/frame-refine', { scan: r }, 'Following the rods and fitting the localizer…');
+  $$('[data-frod]').forEach((b) => { b.onclick = () => {
+    const seg = S.p.frame.scans[r].rods?.[b.dataset.frod];
+    if (seg) goTo(seg[0].map((x, i) => (x + seg[1][i]) / 2));
+  }; });
+  $$('[name="fmUse"]').forEach((el) => { el.onchange = () => act('/frame-use', { scan: el.value }); });
+  // the localizer model
   $('#fmSave').onclick = () => act('/frame-model', { model: readFrameModel() });
   $('#fmReset').onclick = () => { if (confirm('Replace the model with the default geometry?')) act('/frame-model', { reset: true }); };
   $('#fmVerified').onchange = () => act('/frame-model', { model: readFrameModel() });
@@ -691,11 +791,8 @@ function bindFrame() {
     inp.onchange = async () => { const f = inp.files[0]; inp.value = ''; if (f) act('/frame-model', { model: JSON.parse(await f.text()) }); };
     inp.click();
   };
-  $('#fmDetect').onclick = () => act('/frame-detect', { threshold: $('#fmThr').value === '' ? null : Number($('#fmThr').value) },
-    'Finding the localizer rods and fitting the frame…');
-  $$('[name="fmFit"]').forEach((el) => { el.onchange = () => act('/frame-choose', { index: Number(el.value) }); });
   if ($('#fmMount')) $('#fmMount').onclick = () => {
-    const m = readFrameModel(), x = S.p.frame.scans.ct.display_to_frame;  // frame axes in the (RAS) display world
+    const m = readFrameModel(), x = S.p.frame.scans[r].display_to_frame;  // frame axes in the (RAS) display world
     m.mount = [0, 1, 2].map((i) => x[i].slice(0, 3));
     act('/frame-model', { model: m });
   };

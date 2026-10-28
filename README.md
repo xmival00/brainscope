@@ -52,9 +52,13 @@ drag.
    *region-of-interest* box around the brain so the body and loose soft tissue are ignored. The CT is
    overlaid from the start; set the display window of either scan in the viewer bar; *Center* finds the image (rigid, mutual information). For pigs, optionally restrict it to a box around
    the brain. Check with the CT overlay, adjust by hand if needed, accept.
-5. **Frame** (optional): finds an N-bar localizer (e.g. Leksell-compatible; two or three plates) in the CT and gives
-   contacts, AC/PC and plans frame coordinates. The localizer geometry is editable per project; the default must be
-   checked against your localizer. Several fits are listed (frame mounting, e.g. on animals) to choose from.
+5. **Frame** (optional): finds an N-bar localizer (e.g. Leksell-compatible; two or three plates) in the CT or the MRI
+   and gives contacts, AC/PC and plans frame coordinates. Per scan: set the intensity band that makes the rods light up
+   (shown in red as you drag; CT rods can be only slightly brighter, or darker, than their plate), place the localizer
+   model (*Auto-find*, or by hand: centre at the crosshair, 90° turns, nudges), then *Track rods and fit*: every rod is
+   followed slice by slice and the model is fitted to the rod centres (residual per rod). With both scans fitted, their
+   agreement is shown and you choose which one gives the coordinates. The localizer geometry is editable per project;
+   the default must be checked against your localizer.
 6. **Leads**: for each lead, put the crosshair on its deepest end and press <kbd>T</kbd>, on a point further
    along it and press <kbd>E</kbd>, pick the lead preset and press *Detect contacts*. The app then works in
    planes perpendicular to the lead, in stages:

@@ -178,7 +178,7 @@ def get_project(h, name, q):
     return _summary(h, h.app.project(name))
 
 
-@route("POST", r"/api/p/([^/]+)/(undo|redo|species|orient|roi|acpc|frame-model|frame-detect|frame-choose|brain|coreg|nudge|coreg-accept|coreg-reset|lead|lead-edit)")
+@route("POST", r"/api/p/([^/]+)/(undo|redo|species|orient|roi|acpc|frame-model|frame-detect|frame-choose|frame-band|frame-pose|frame-autofind|frame-refine|frame-use|brain|coreg|nudge|coreg-accept|coreg-reset|lead|lead-edit)")
 def mutate(h, name, action, q):
     p = h.app.project(name)
     b = h.body_json()
@@ -206,6 +206,16 @@ def mutate(h, name, action, q):
             p.detect_frame(b.get("threshold"))
         elif action == "frame-choose":
             p.choose_frame(b["index"])
+        elif action == "frame-band":
+            p.set_frame_band(b["scan"], b["band"])
+        elif action == "frame-pose":
+            p.frame_pose(b["scan"], b["op"], **{k: b[k] for k in ("point", "axis", "deg", "move", "rot", "index") if k in b})
+        elif action == "frame-autofind":
+            p.frame_autofind(b["scan"])
+        elif action == "frame-refine":
+            p.frame_refine(b["scan"])
+        elif action == "frame-use":
+            p.frame_use(b["scan"])
         elif action == "acpc":
             p.set_acpc(b.get("point"), b.get("xyz"), b.get("origin"), clear=bool(b.get("clear")))
         elif action == "roi":
@@ -303,7 +313,7 @@ def vol(h, name, role, q):
 def vol_frame(h, name, q):
     p = h.app.project(name)
     with p.lock:
-        f = p.frame_file()
+        f = p.frame_file(q.get("scan", "ct"))
     return h.file(f)
 
 

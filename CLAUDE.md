@@ -41,13 +41,15 @@ demo case (`brainscope demo DIR`), see git history for the script pattern.
   v0.1.4 (zoom, coregistration region-of-interest box);
   v0.1.5 (AC/PC landmarks and coordinates, planned vs delivered);
   v0.1.6 (stereotactic frame from the N-bar localizer, Targets step, AC/PC on the MRI first);
-  v0.1.7 (subject steps + Leads/Brain model modules, Brain model (`brainmodel`), plane sliders, pan; PLAN D29-D30, D32).
-- In progress: 0.1.8 = frame rework (PLAN D33-D36, steps a-d in PLAN section 8). Done: (a) engine
+  v0.1.7 (subject steps + Leads/Brain model modules, Brain model (`brainmodel`), plane sliders, pan; PLAN D29-D30, D32);
+  v0.1.8 (frame per scan with band preview, rough alignment and rod tracking; zoom fix for oblique scans).
+- In progress: frame rework (PLAN D33-D36, steps a-d in PLAN section 8). Done: (a) engine
   (`localizer.track/fit_tracked/refine`, intensity band) + per-scan frame storage in `project` (`frame_state`,
   `frame_pose`, `frame_autofind`, `frame_refine`, `frame_use`, `frame_agreement`; 0.1.6 projects converted);
-  the 0.1.7 Frame UI still runs through `frameCompat` in app.js. Next: (b) new Frame step UI (scan choice, band
-  preview, expected rods + rough alignment, track/fit, agreement, choice; D39 Brainlab-like interaction), then
-  (c) rod inspector, (d) debug bundle crops, docs, release.
+  (b) Frame step UI (scan choice, band preview on a client-side clone with a 3-band colour map, model overlay,
+  rough alignment, auto-find, track/fit, per-rod table with go, agreement, choice) -> released as v0.1.8.
+  Next (0.1.9): (c) rod inspector (lengthwise views + cross-section per rod, click = manual centre, exclude
+  slices; `track` already takes `manual`/`excluded`), (d) debug bundle with full-resolution crops around the rods.
 - After that: Brainlab arc/collar plans (D37, convention to confirm: PLAN section 10.4); drawing tools + guided
   Brain model (D38); Structures (D31); strips (1xN, preset type "strip"); ask whether 2D grids are needed. Also: verify the localizer geometry on a real CT (PLAN section 10); the user tests on real human and pig data and sends debug bundles; tune detection on them (DBS leads,
   contacts mostly not separable); answer `docs/PLAN.md` section 10.
