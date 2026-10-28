@@ -23,7 +23,8 @@ input[type=number] { width: 70px; }
 .spacer { flex: 1; }
 header#top { height: 46px; display: flex; align-items: center; gap: 8px; padding: 0 12px;
   border-bottom: 1px solid var(--line); background: var(--panel); }
-.brand { font-weight: 700; letter-spacing: .3px; font-size: 15px; margin-right: 12px; }
+.brand { font-weight: 700; letter-spacing: .3px; font-size: 15px; margin-right: 12px; display: flex; align-items: center; gap: 8px; }
+.brand .logo { width: 26px; height: 26px; }
 .ruo { font-weight: 500; font-size: 11px; color: var(--accent); border: 1px solid #5c4a17; border-radius: 10px;
   padding: 1px 7px; margin-left: 6px; }
 .proj { display: flex; gap: 6px; align-items: center; } .proj select { min-width: 180px; }

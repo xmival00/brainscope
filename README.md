@@ -1,3 +1,5 @@
+<img src="docs/logo.png" alt="brainscope logo" width="96" align="right">
+
 # brainscope
 
 Desktop app for coregistering a CT to an MRI and localizing the contacts of intracranial leads (SEEG, DBS and

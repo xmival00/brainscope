@@ -28,6 +28,7 @@ Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
 UninstallDisplayIcon={app}\brainscope.exe
+SetupIconFile=..\icons\brainscope.ico
 LicenseFile=..\..\LICENSE
 
 [Languages]
