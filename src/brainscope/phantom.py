@@ -27,35 +27,36 @@ def _soft(x, width):
 def head(spacing=2.0, contrast="mri", seed=0):
     """A head-like volume: scalp, skull, brain, asymmetric ventricles and a nose (front = +y, up = +z)."""
     size = np.array([140.0, 170.0, 150.0])
-    shape = np.ceil(size / spacing).astype(int)
+    shape = tuple(int(x) for x in np.ceil(size / spacing))
     affine = grid_affine([spacing] * 3, -size / 2)
-    p = world_grid(shape, affine)
-    rad = lambda c, r: np.sqrt((((p - np.asarray(c)) / np.asarray(r)) ** 2).sum(-1))
+    ax = [np.arange(n, dtype=np.float32) * spacing - size[i] / 2 for i, n in enumerate(shape)]
+    x, y, z = ax[0][:, None, None], ax[1][None, :, None], ax[2][None, None, :]
+
+    def rad(c, r):
+        return np.sqrt(((x - c[0]) / r[0]) ** 2 + ((y - c[1]) / r[1]) ** 2 + ((z - c[2]) / r[2]) ** 2)
+
     w = spacing / 2
     head_ = _soft((rad((0, 0, 0), (60, 75, 62)) - 1) * 60, w)
     nose = _soft((rad((0, 72, -20), (14, 18, 14)) - 1) * 14, w)
-    inner = rad((0, 0, 5), (52, 66, 52))
-    brain = _soft((inner - 1) * 52, w)
+    brain = _soft((rad((0, 0, 5), (52, 66, 52)) - 1) * 52, w)
     skull = _soft((rad((0, 0, 3), (56, 70, 57)) - 1) * 56, w) - brain
-    vent_l = _soft((rad((-9, 5, 10), (5, 18, 7)) - 1) * 6, w)
-    vent_r = _soft((rad((11, 8, 8), (4, 14, 6)) - 1) * 5, w)
+    vents = _soft((rad((-9, 5, 10), (5, 18, 7)) - 1) * 6, w) + _soft((rad((11, 8, 8), (4, 14, 6)) - 1) * 5, w)
     wm = _soft((rad((0, 0, 8), (38, 50, 36)) - 1) * 38, w)
     rng = np.random.default_rng(seed)
-    tex = ndimage.gaussian_filter(rng.normal(size=shape), 3.0 / spacing)
+    tex = ndimage.gaussian_filter(rng.standard_normal(shape, dtype=np.float32), 3.0 / spacing)
     tex /= tex.std() + 1e-9
-    soft = np.clip(head_ + nose - skull - brain, 0, 1)
+    noise = rng.standard_normal(shape, dtype=np.float32)
     if contrast == "mri":
-        img = 550 * soft + 120 * skull + brain * (650 + 250 * wm) - 500 * (vent_l + vent_r) * brain
-        img += 25 * tex * brain + rng.normal(0, 12, shape)
+        soft = np.clip(head_ + nose - skull - brain, 0, 1)
+        img = 550 * soft + 120 * skull + brain * (650 + 250 * wm) - 500 * vents * brain + 25 * tex * brain + 12 * noise
         img = np.clip(img, 0, None)
     else:
-        img = -1000 + 1040 * np.clip(head_ + nose, 0, 1) + 1150 * skull - 5 * brain
-        img -= 30 * (vent_l + vent_r) * brain
-        img += 4 * tex * brain + rng.normal(0, 8, shape)
+        img = -1000 + 1040 * np.clip(head_ + nose, 0, 1) + 1150 * skull - 5 * brain - 30 * vents * brain
+        img += 4 * tex * brain + 8 * noise
     return img.astype(np.float32), affine
 
 
-def add_lead(data, affine, tip, direction, preset, length=None, body_hu=400.0, metal_hu=3500.0):
+def add_lead(data, affine, tip, direction, preset, length=None, body_hu=400.0, metal_hu=12000.0):
     """Render a lead into `data` (in place, before blurring). Returns true contact centers (world)."""
     u = np.asarray(direction, float)
     u /= np.linalg.norm(u)

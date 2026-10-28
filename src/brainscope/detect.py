@@ -18,6 +18,7 @@ from . import presets as pr
 from .transforms import apply
 
 STEP = 0.1  # mm between profile samples along the lead
+MAX_LEAD_AREA = 12.0  # mm2 above threshold in one perpendicular plane; more is bone or another object
 
 
 @dataclass
@@ -92,7 +93,8 @@ def _refine(data, inv, axis, s, radius, thr, cval, degree):
     img = _sample(data, inv, pts, cval)
     wgt = np.clip(img - thr, 0, None) * ((a ** 2 + b ** 2) <= radius ** 2)
     tot = wgt.sum((1, 2))
-    ok = tot > 0
+    area = (wgt > 0).sum((1, 2)) * 0.25 ** 2
+    ok = (tot > 0) & (area <= MAX_LEAD_AREA)  # a wide bright area is bone, not a lead
     if ok.sum() < degree + 3:
         return axis
     _, e1, e2 = axis.frame(s[ok])
@@ -209,7 +211,7 @@ def _amplitude(m, p):
 def _metal_threshold(data, inv, axis, s, cval):
     pts, a, b = _planes(axis, s, 3.0, 0.5)
     img = _sample(data, inv, pts, cval)[:, (a ** 2 + b ** 2) <= 9.0]
-    bg, hi = float(np.median(img)), float(np.percentile(img.max(1), 75))
+    bg, hi = float(np.median(img)), float(np.percentile(img.max(1), 90))
     return bg + 0.5 * (hi - bg)
 
 

@@ -28,26 +28,12 @@ def coregister(ct_data, ct_affine, mri_data, mri_affine, species="human", init=N
     moving_raw = to_sitk(ct_data, ct_affine)
     moving = sitk.Clamp(moving_raw, sitk.sitkFloat32, *CT_WINDOW)
 
-    reg = sitk.ImageRegistrationMethod()
-    reg.SetMetricAsMattesMutualInformation(numberOfHistogramBins=50)
-    reg.SetMetricSamplingStrategy(reg.RANDOM)
-    n_vox = float(np.prod(fixed.GetSize()))
-    reg.SetMetricSamplingPercentagePerLevel(  # about SAMPLES voxels per level: noise-free enough, still fast
-        [min(1.0, SAMPLES * f ** 3 / n_vox) for f in p["shrink"]], seed)
-    reg.SetInterpolator(sitk.sitkLinear)
-    reg.SetOptimizerAsRegularStepGradientDescent(learningRate=2.0, minStep=1e-4, numberOfIterations=iterations,
-                                                 relaxationFactor=0.7, gradientMagnitudeTolerance=1e-10)
-    reg.SetOptimizerScalesFromPhysicalShift()
-    reg.SetShrinkFactorsPerLevel(p["shrink"])
-    reg.SetSmoothingSigmasPerLevel(p["smooth_mm"])
-    reg.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
-
     metal = moving_raw > metal_hu
     if sitk.GetArrayViewFromImage(metal).any():
         metal = sitk.BinaryDilate(metal, [2, 2, 2])
-    reg.SetMetricMovingMask(sitk.Cast(1 - metal, sitk.sitkUInt8))
-    if crop_center is not None and crop_radius:
-        reg.SetMetricFixedMask(_box_mask(fixed, mri_affine, crop_center, crop_radius))
+    moving_mask = sitk.Cast(1 - metal, sitk.sitkUInt8)
+    fixed_mask = _box_mask(fixed, mri_affine, crop_center, crop_radius) if crop_center is not None and crop_radius \
+        else None
 
     if init is not None:
         tx = ras_to_sitk(np.linalg.inv(init), center=fixed.TransformContinuousIndexToPhysicalPoint(
@@ -57,10 +43,29 @@ def coregister(ct_data, ct_affine, mri_data, mri_affine, species="human", init=N
             sitk.Clamp(fixed, sitk.sitkFloat32, 0, float(np.percentile(mri_data, 99.5))),
             sitk.Clamp(moving, sitk.sitkFloat32, 0, CT_WINDOW[1]),
             sitk.Euler3DTransform(), sitk.CenteredTransformInitializerFilter.MOMENTS)
-    reg.SetInitialTransform(tx, inPlace=True)
-    reg.Execute(fixed, moving)
-    mri_to_ct = sitk_to_ras(tx)
-    return np.linalg.inv(mri_to_ct), float(reg.GetMetricValue())
+    # Coarse to fine, then a second pass over the two finest levels: the step size decays before the
+    # optimum is reached in a single pass.
+    for (shrink, smooth), (rate, min_step) in zip(((p["shrink"], p["smooth_mm"]), (p["shrink"][-2:], p["smooth_mm"][-2:])),
+                                                  ((2.0, 1e-4), (0.5, 1e-5))):
+        reg = sitk.ImageRegistrationMethod()
+        reg.SetMetricAsMattesMutualInformation(numberOfHistogramBins=50)
+        reg.SetMetricSamplingStrategy(reg.RANDOM)
+        n_vox = float(np.prod(fixed.GetSize()))
+        reg.SetMetricSamplingPercentagePerLevel(  # about SAMPLES voxels per level: noise-free enough, still fast
+            [min(1.0, SAMPLES * f ** 3 / n_vox) for f in shrink], seed)
+        reg.SetInterpolator(sitk.sitkLinear)
+        reg.SetOptimizerAsRegularStepGradientDescent(learningRate=rate, minStep=min_step, numberOfIterations=iterations,
+                                                     relaxationFactor=0.7, gradientMagnitudeTolerance=1e-10)
+        reg.SetOptimizerScalesFromPhysicalShift()
+        reg.SetShrinkFactorsPerLevel(shrink)
+        reg.SetSmoothingSigmasPerLevel(smooth)
+        reg.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
+        reg.SetMetricMovingMask(moving_mask)
+        if fixed_mask is not None:
+            reg.SetMetricFixedMask(fixed_mask)
+        reg.SetInitialTransform(tx, inPlace=True)
+        reg.Execute(fixed, moving)
+    return np.linalg.inv(sitk_to_ras(tx)), float(reg.GetMetricValue())
 
 
 def _box_mask(fixed, mri_affine, center, radius):
