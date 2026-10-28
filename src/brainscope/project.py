@@ -159,6 +159,7 @@ class Project:
         self.subject["coreg"] = None
         if role == "ct":
             self.subject["leads"] = []  # contacts were measured on the previous CT
+            self.subject["scans"]["ct"]["levels"] = register.ct_levels(self.volume("ct").data)
         self.save()
 
     def raw_affine(self, role):
@@ -187,6 +188,13 @@ class Project:
             self._vols[role] = (sha, volume.load(self.path(role)))
         return self._vols[role][1]
 
+    def ct_levels(self):
+        s = self.scan("ct")
+        if "levels" not in s:  # projects made before 0.1.2
+            s["levels"] = register.ct_levels(self.volume("ct").data)
+            self.save()
+        return s["levels"]
+
     def set_species(self, species):
         if species not in SPECIES:
             raise ValueError(f"species must be one of {SPECIES}")
@@ -213,7 +221,7 @@ class Project:
         c = self.subject.get("coreg")
         init = np.array(c["ct_to_mri"]) if from_current and c else None
         m, metric = register.coregister(ct.data, self.corrected_affine("ct"), mri.data, self.corrected_affine("mri"),
-                                        species=self.subject["species"], init=init,
+                                        species=self.subject["species"], init=init, levels=self.ct_levels(),
                                         crop_center=crop_center, crop_radius=crop_radius)
         self.checkpoint()
         self.subject["coreg"] = {"ct_to_mri": m.tolist(), "metric": round(metric, 5), "accepted": False,
@@ -556,6 +564,8 @@ class Project:
                 scans[role] = dict(s, spacing=[round(float(x), 3) for x in np.sqrt((aff[:3, :3] ** 2).sum(0))],
                                    axes=ori.axis_labels(s["orient"]),
                                    center=apply(self.corrected_affine(role), (np.array(s["shape"]) - 1) / 2).tolist())
+        if "ct" in scans:
+            scans["ct"]["levels"] = self.ct_levels()
         try:
             contacts = self.contacts() if sub.get("coreg") else []
         except ValueError:

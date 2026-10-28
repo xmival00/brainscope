@@ -36,6 +36,24 @@ def binary() -> str:
     return found
 
 
+def _sidecar(path):
+    """dcm2niix sidecars can hold raw control characters or broken quoting (seen with a Siemens CT): read leniently."""
+    try:
+        text = Path(path).read_text(errors="replace")
+    except OSError:
+        return {}
+    try:
+        return json.loads(text, strict=False)
+    except ValueError:
+        pass
+    out = {}
+    for key in ("SeriesDescription", "Modality", "SeriesNumber"):
+        m = re.search(rf'"{key}"\s*:\s*(?:"([^"\n]*)"|(-?\d+))', text)
+        if m:
+            out[key] = m.group(1) if m.group(1) is not None else int(m.group(2))
+    return out
+
+
 def _info(f, meta):
     hdr = nib.load(str(f)).header
     shape = hdr.get_data_shape()
@@ -54,7 +72,7 @@ def convert_dcm2niix(folder, out_dir):
     series = []
     for f in sorted(Path(out_dir).glob("*.nii.gz")):
         side = f.with_name(f.name[:-7] + ".json")
-        s = _info(f, json.loads(side.read_text()) if side.exists() else {})
+        s = _info(f, _sidecar(side))
         if s:
             series.append(s)
     if not series:
@@ -97,7 +115,7 @@ def convert(folder, out_dir) -> list[dict]:
     out_dir.mkdir(parents=True, exist_ok=True)
     try:
         return convert_dcm2niix(folder, out_dir)
-    except (OSError, RuntimeError, subprocess.SubprocessError) as e:
+    except Exception as e:  # noqa: BLE001  any failure of the helper program: use the fallback
         first = f"{type(e).__name__}: {e}"
     for f in out_dir.iterdir():
         f.unlink()

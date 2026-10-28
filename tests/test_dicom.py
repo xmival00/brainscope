@@ -51,3 +51,10 @@ def test_other_formats_are_converted_on_import(tmp_path, ext):
     assert p.path("mri").name.endswith(".nii.gz")
     assert np.allclose(v.affine, aff, atol=1e-4)
     assert np.allclose(v.data, data, atol=1e-3)
+
+
+def test_broken_sidecar_is_read_leniently(tmp_path):
+    f = tmp_path / "s.json"
+    f.write_text('{\n "Modality": "CT",\n "SeriesNumber": 3,\n "SeriesDescription": "Head_0.5",\n'
+                 ' "ReconFilterType": "Hr68\t"broken",\n "x": 1\n}')
+    assert dicom._sidecar(f) == {"Modality": "CT", "SeriesNumber": 3, "SeriesDescription": "Head_0.5"}

@@ -10,7 +10,7 @@ const LEAD_COLORS = ['#ff5d5d', '#3fa7ff', '#3ecf8e', '#f0b429', '#c77dff', '#ff
 
 const S = {
   state: null, p: null, step: 'import', presets: [], orientRole: 'mri', layout: 'multi',
-  ctWindow: 'bone', ctOpacity: 0.5, ctVisible: true, base: 'mri', lead: null, contact: null, view: null,
+  ctWindow: 'bone', ctOpacity: 0.5, ctVisible: true, base: 'mri', win: { mri: null, ct: null }, winRole: 'ct', lead: null, contact: null, view: null,
   draft: { name: '', preset: '', hemisphere: 'n/a', curved: false, tip: null, entry: null },
   loaded: { base: null, contacts: null }, cropRadius: 70, useCrop: false, nudgeMm: 1, nudgeDeg: 1,
   exportOpts: { tsv: true, leads_file: true, transforms: true, mri: false, ct: false, labels: false },
@@ -77,8 +77,9 @@ function setLayout(l) {
   nv.setSliceType({ multi: nv.sliceTypeMultiplanar, axial: nv.sliceTypeAxial, coronal: nv.sliceTypeCoronal,
     sagittal: nv.sliceTypeSagittal, render: nv.sliceTypeRender }[l]);
 }
-const CT_WIN = { bone: [300, 2000], metal: [1500, 4000] };
-const CT_BASE = { bone: [-200, 2000], metal: [1000, 4000] };
+// CT windows come from the engine (Hounsfield units, HU with an offset, or percentiles of an unknown scale)
+const ctLevels = () => S.p?.scans.ct?.levels || { orient: [-200, 1500], base_bone: [-200, 2000], base_metal: [1000, 4000],
+  overlay_bone: [300, 2000], overlay_metal: [1500, 4000] };
 
 function scanKey(role) {
   const s = S.p.scans[role];
@@ -89,20 +90,20 @@ function wantedVolumes() {
   if (!p) return out;
   if (S.step === 'orient') {
     const r = S.orientRole;
-    if (p.scans[r]) out.push({ role: r, colormap: 'gray', ...(r === 'ct' ? { cal_min: -200, cal_max: 1500 } : {}) });
+    if (p.scans[r]) out.push({ role: r, colormap: 'gray', ...(r === 'ct' ? { cal_min: ctLevels().orient[0], cal_max: ctLevels().orient[1] } : {}) });
     return out;
   }
-  const fused = p.scans.mri && p.scans.ct && p.coreg && S.step !== 'import';
+  const fused = p.scans.mri && p.scans.ct;  // before coregistration the CT is placed by its header
   const overlay = S.ctVisible ? S.ctOpacity : 0;
   if (fused && S.base === 'ct') {  // CT at its own resolution shows thin leads; MRI blended on top
-    const [lo, hi] = CT_BASE[S.ctWindow];
+    const [lo, hi] = ctLevels()[`base_${S.ctWindow}`];
     return [{ role: 'ct', colormap: 'gray', cal_min: lo, cal_max: hi }, { role: 'mri', colormap: 'gray', opacity: overlay }];
   }
   if (p.scans.mri) out.push({ role: 'mri', colormap: 'gray' });
   if (fused) {
-    const [lo, hi] = CT_WIN[S.ctWindow];
+    const [lo, hi] = ctLevels()[`overlay_${S.ctWindow}`];
     out.push({ role: 'ct', colormap: 'warm', cal_min: lo, cal_max: hi, opacity: overlay });
-  } else if (p.scans.ct && !p.scans.mri) out.push({ role: 'ct', colormap: 'gray', cal_min: -200, cal_max: 1500 });
+  } else if (p.scans.ct && !p.scans.mri) out.push({ role: 'ct', colormap: 'gray', cal_min: ctLevels().orient[0], cal_max: ctLevels().orient[1] });
   return out;
 }
 function volSpec(v) {
@@ -119,6 +120,7 @@ async function refreshViewer() {
   $('#empty').hidden = !!(S.p && (S.p.scans.mri || S.p.scans.ct));
   $('#empty').textContent = S.p ? 'Import an MRI and a CT to start.' : 'Create or open a project to start.';
   const vols = wantedVolumes();
+  vols.forEach((v) => { if (S.win[v.role]) [v.cal_min, v.cal_max] = S.win[v.role]; });  // the user's own window
   const base = hkey([S.p?.name, vols.map((v) => [v.role, scanKey(v.role), v.colormap])]);
   const ck = S.p ? contactsKey() : null;
   try {
@@ -126,7 +128,13 @@ async function refreshViewer() {
       S.loaded = { base, contacts: null };
       await nv.loadVolumes(vols.map(volSpec));
     } else {
-      vols.forEach((v, i) => { const vol = nv.volumes[i]; if (vol && v.cal_min !== undefined) { vol.cal_min = v.cal_min; vol.cal_max = v.cal_max; } if (vol) vol.opacity = v.opacity ?? 1; });
+      vols.forEach((v, i) => {
+        const vol = nv.volumes[i];
+        if (!vol) return;
+        if (v.cal_min !== undefined) { vol.cal_min = v.cal_min; vol.cal_max = v.cal_max; }
+        else if (vol.robust_min !== undefined) { vol.cal_min = vol.robust_min; vol.cal_max = vol.robust_max; }
+        vol.opacity = v.opacity ?? 1;
+      });
       if (nv.volumes.length) nv.updateGLVolume();
     }
     if (ck !== S.loaded.contacts) {
@@ -146,7 +154,22 @@ async function refreshViewer() {
     }
   } catch (e) { toast(`Viewer: ${e.message}`, 'error'); }
   $('#ctCtl').style.visibility = vols.length > 1 ? 'visible' : 'hidden';
+  syncWindow(vols);
   updateCoords();
+}
+function syncWindow(vols) {
+  const roles = vols.map((v) => v.role);
+  $('#winCtl').style.visibility = roles.length ? 'visible' : 'hidden';
+  if (!roles.length) return;
+  if (!roles.includes(S.winRole)) S.winRole = roles[roles.length - 1];
+  $('#winRole').innerHTML = roles.map((r) => `<option value="${r}" ${r === S.winRole ? 'selected' : ''}>${r.toUpperCase()}</option>`).join('');
+  const vol = nv.volumes[roles.indexOf(S.winRole)];
+  if (vol) { $('#winLo').value = +Number(vol.cal_min).toPrecision(4); $('#winHi').value = +Number(vol.cal_max).toPrecision(4); }
+}
+function setWindow() {
+  const lo = Number($('#winLo').value), hi = Number($('#winHi').value);
+  if (!(hi > lo)) { toast('The upper value must be larger than the lower one.', 'error'); return; }
+  S.win[S.winRole] = [lo, hi]; refreshViewer();
 }
 
 // ---------- projects ----------
@@ -163,7 +186,7 @@ async function openProject(name) {
 async function setProject(p) {
   const changed = S.p?.name !== p.name;
   S.p = p;
-  if (changed) { S.lead = null; S.contact = null; S.view = null; S.loaded = { base: null, contacts: null }; S.step = firstOpenStep(); }
+  if (changed) { S.lead = null; S.contact = null; S.view = null; S.loaded = { base: null, contacts: null }; S.win = { mri: null, ct: null }; S.step = firstOpenStep(); }
   if (S.lead && !p.leads.some((l) => l.name === S.lead)) { S.lead = null; S.view = null; }
   $('#projectSelect').value = p.name;
   $('#projectFolder').textContent = p.folder; $('#projectFolder').title = p.folder;
@@ -238,6 +261,7 @@ function scanCard(role) {
     <span>Voxel (mm)</span><span>${s.spacing.map((x) => fmt(x, 2)).join(' × ')}</span></div>` : '<p class="muted">Not imported yet.</p>';
   return `<div class="card"><div class="row"><b>${title}</b><span class="spacer"></span>${s ? '<span class="badge ok">imported</span>' : ''}</div>${info}
     <div class="row"><button data-nifti="${role}" title="NIfTI (.nii, .nii.gz), MGZ/MGH, NRRD, MHA/MHD">Image file…</button><button data-dicom="${role}">DICOM folder…</button></div>
+    ${role === 'ct' && s?.levels && s.levels.kind !== 'hu' ? `<p class="muted small">CT values are not in Hounsfield units (${s.levels.kind === 'hu+offset' ? `offset ${fmt(s.levels.offset, 0)}` : 'unknown scale'}); display and registration windows were adapted.</p>` : ''}
     ${role === 'ct' && s && S.p.leads.length ? '<p class="muted small">Importing another CT removes the leads of this project.</p>' : ''}</div>`;
 }
 function importHTML() {
@@ -749,7 +773,11 @@ document.addEventListener('keydown', (e) => {
 });
 $$('#steps button').forEach((b) => { b.onclick = () => goStep(b.dataset.step); });
 $$('#layout button').forEach((b) => { b.onclick = () => setLayout(b.dataset.layout); });
-$('#ctWindow').onchange = (e) => { S.ctWindow = e.target.value; refreshViewer(); };
+$('#ctWindow').onchange = (e) => { S.ctWindow = e.target.value; S.win.ct = null; refreshViewer(); };
+$('#winRole').onchange = (e) => { S.winRole = e.target.value; refreshViewer(); };
+$('#winLo').onchange = setWindow;
+$('#winHi').onchange = setWindow;
+$('#winAuto').onclick = () => { S.win[S.winRole] = null; refreshViewer(); };
 $$('#base button').forEach((b) => { b.onclick = () => { S.base = b.dataset.base; $$('#base button').forEach((x) => x.classList.toggle('on', x === b)); refreshViewer(); }; });
 $('#ctOpacity').oninput = (e) => { S.ctOpacity = Number(e.target.value); S.ctVisible = true; refreshViewer(); };
 $('#projectSelect').onchange = (e) => openProject(e.target.value);

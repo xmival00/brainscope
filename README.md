@@ -36,7 +36,8 @@ Projects are stored in `~/brainscope-projects` (change with `brainscope app --pr
 2. **Orient** each scan separately: rotate by 90° in the sagittal, coronal or axial view and mirror until the
    head is upright, the nose points forward and the subject's left is on the screen left (neurological view).
    Confirm which side is left (e.g. from the CT marker). Only the header changes; voxels are never resampled.
-3. **Coregister** the CT to the MRI (rigid, mutual information). For pigs, optionally restrict it to a box around
+3. **Coregister** the CT to the MRI (the CT is overlaid from the start; set the display window of either scan in
+   the viewer bar) (rigid, mutual information). For pigs, optionally restrict it to a box around
    the brain. Check with the CT overlay, adjust by hand if needed, accept.
 4. **Leads**: for each lead, put the crosshair on its deepest end and press <kbd>T</kbd>, on a point further
    along it and press <kbd>E</kbd>, pick the lead preset and press *Detect contacts*. The app then works in

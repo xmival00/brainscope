@@ -40,6 +40,11 @@
         CT window <select id="ctWindow"><option value="bone">bone</option><option value="metal">metal</option></select>
         overlay <input type="range" id="ctOpacity" min="0" max="1" step="0.05" value="0.5" title="Overlay opacity (O toggles)">
       </span>
+      <span class="ctl" id="winCtl">window <select id="winRole"></select>
+        <input type="number" id="winLo" step="any" title="Value shown as black"> –
+        <input type="number" id="winHi" step="any" title="Value shown as white">
+        <button id="winAuto" class="ghost" title="Back to the automatic window">auto</button>
+      </span>
       <div class="spacer"></div>
       <span id="coords" class="mono"></span>
     </div>

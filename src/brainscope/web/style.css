@@ -41,7 +41,7 @@ nav#steps button i.warn { background: var(--warn); }
 nav#steps button.on { background: var(--panel2); border-color: var(--line); }
 nav#steps button.on b { background: var(--accent); color: #1a1300; border-color: var(--accent); }
 #center { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-#viewerBar { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-bottom: 1px solid var(--line);
+#viewerBar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 6px 10px; border-bottom: 1px solid var(--line);
   background: var(--panel); }
 .seg { display: inline-flex; } .seg button { border-radius: 0; margin-left: -1px; padding: 4px 9px; }
 .seg button:first-child { border-radius: var(--radius) 0 0 var(--radius); }

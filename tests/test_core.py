@@ -51,9 +51,12 @@ def test_ras_lps_round_trip():
     assert np.allclose(p_lps * [-1, -1, 1], p_ras)
 
 
-def test_coregistration_recovers_known_rigid_transform():
+@pytest.mark.parametrize("offset", [0, 1024])  # CT in HU, or stored as HU + 1024 (e.g. 0-4095)
+def test_coregistration_recovers_known_rigid_transform(offset):
     mri, aff = phantom.head(spacing=2.0, contrast="mri")
     ct, _ = phantom.head(spacing=2.0, contrast="ct", seed=1)
+    ct = np.clip(ct + offset, -1024 if offset == 0 else 0, None)
+    assert register.ct_levels(ct)["kind"] == ("hu" if offset == 0 else "hu+offset")
     truth = rigid((6, -4, 8), (5, -3, 4), (0, 0, 0))  # CT world -> MRI world
     ct_aff = np.linalg.inv(truth) @ aff
     m, _ = register.coregister(ct, ct_aff, mri, aff, species="human")

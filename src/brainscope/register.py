@@ -13,11 +13,33 @@ SPECIES = {
     "other": {"shrink": [4, 2, 1], "smooth_mm": [2.0, 1.0, 0.0]},
 }
 CT_WINDOW = (-200.0, 1500.0)  # HU kept for the metric; metal is masked out separately
+# Windows in Hounsfield units, for display (orient/base/overlay) and registration (reg, metal threshold).
+HU_LEVELS = {"orient": (-200, 1500), "base_bone": (-200, 2000), "base_metal": (1000, 4000),
+             "overlay_bone": (300, 2000), "overlay_metal": (1500, 4000), "reg": CT_WINDOW, "metal": 2500}
+
+
+def ct_levels(data):
+    """Intensity windows for a CT: Hounsfield units, HU stored with an offset (e.g. 0-4095), or an unknown
+    scale (then from percentiles). Returns {"kind", "offset", <window>: [lo, hi], "metal": threshold}."""
+    sub = np.asarray(data[::4, ::4, ::2], np.float32)
+    p005, p50, p999, p9999 = (float(x) for x in np.percentile(sub, [0.5, 50, 99.9, 99.99]))
+    if p005 < -200:
+        kind, offset = "hu", 0.0
+    elif float(sub.min()) >= 0 and p999 - p005 > 1000:
+        kind, offset = "hu+offset", p005 + 1000.0
+    else:
+        span = max(p999 - p50, 1e-6)
+        return {"kind": "percentile", "offset": None, "orient": [p005, p999], "base_bone": [p50, p999],
+                "base_metal": [p50 + 0.6 * span, max(p9999, p999 + 1e-6)], "overlay_bone": [p50 + 0.2 * span, p999],
+                "overlay_metal": [p999, max(p9999, p999 + 1e-6)], "reg": [p005, p999], "metal": p9999}
+    out = {"kind": kind, "offset": round(offset, 1), "metal": HU_LEVELS["metal"] + offset}
+    out.update({k: [v[0] + offset, v[1] + offset] for k, v in HU_LEVELS.items() if k != "metal"})
+    return out
 SAMPLES = 300_000
 
 
 def coregister(ct_data, ct_affine, mri_data, mri_affine, species="human", init=None,
-               crop_center=None, crop_radius=None, metal_hu=2500.0, iterations=300, seed=1):
+               crop_center=None, crop_radius=None, levels=None, iterations=300, seed=1):
     """Return (4x4 CT world -> MRI world, final metric). Affines are the orientation-corrected ones.
 
     `init` is a starting CT->MRI 4x4 (e.g. after a manual nudge); otherwise the image centers of mass are
@@ -26,7 +48,9 @@ def coregister(ct_data, ct_affine, mri_data, mri_affine, species="human", init=N
     p = SPECIES.get(species, SPECIES["other"])
     fixed = to_sitk(mri_data, mri_affine)
     moving_raw = to_sitk(ct_data, ct_affine)
-    moving = sitk.Clamp(moving_raw, sitk.sitkFloat32, *CT_WINDOW)
+    levels = levels or ct_levels(ct_data)
+    window, metal_hu = [float(x) for x in levels["reg"]], float(levels["metal"])
+    moving = sitk.Clamp(moving_raw, sitk.sitkFloat32, *window)
 
     metal = moving_raw > metal_hu
     if sitk.GetArrayViewFromImage(metal).any():
@@ -41,7 +65,7 @@ def coregister(ct_data, ct_affine, mri_data, mri_affine, species="human", init=N
     else:
         tx = sitk.CenteredTransformInitializer(
             sitk.Clamp(fixed, sitk.sitkFloat32, 0, float(np.percentile(mri_data, 99.5))),
-            sitk.Clamp(moving, sitk.sitkFloat32, 0, CT_WINDOW[1]),
+            sitk.Clamp(moving, sitk.sitkFloat32, window[0] + 0.12 * (window[1] - window[0]), window[1]),  # ~0 HU up
             sitk.Euler3DTransform(), sitk.CenteredTransformInitializerFilter.MOMENTS)
     # Coarse to fine, then a second pass over the two finest levels: the step size decays before the
     # optimum is reached in a single pass.
