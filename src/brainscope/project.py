@@ -218,8 +218,50 @@ class Project:
         self.save()
 
     # ---- coregistration ----
+    def set_roi(self, center=None, size=None, clear=False):
+        """Box (MRI world axes, edge lengths in mm) that limits what coregistration compares, e.g. the brain."""
+        self.scan("mri")
+        self.checkpoint()
+        if clear:
+            self.subject["roi"] = None
+        else:
+            size = [float(x) for x in size]
+            if len(size) != 3 or min(size) < 10:
+                raise ValueError("the box must be at least 10 mm in each direction")
+            self.subject["roi"] = {"center": [float(x) for x in center], "size": size}
+        self.save()
+
+    def roi_file(self):
+        """The box as a thin outline on the MRI grid, for the viewer."""
+        roi = self.subject.get("roi")
+        if not roi:
+            raise ValueError("no region of interest set")
+        aff, shape = self.corrected_affine("mri"), np.array(self.scan("mri")["shape"])
+        key = hashlib.sha1(json.dumps(roi).encode() + aff.tobytes()).hexdigest()[:12]
+        f = self.root / "cache" / f"roi-{key}.nii.gz"
+        if not f.exists():
+            for old in (self.root / "cache").glob("roi-*.nii.gz"):
+                old.unlink()
+            h = np.array(roi["size"]) / 2
+            c = np.array(roi["center"])
+            corners = [c + h * np.array([sx, sy, sz]) for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)]
+            vox = apply(np.linalg.inv(aff), corners)
+            lo = np.clip(np.round(vox.min(0)).astype(int), 0, shape - 1)
+            hi = np.clip(np.round(vox.max(0)).astype(int), 0, shape - 1)
+            lab = np.zeros(tuple(shape), np.uint8)
+            box = tuple(slice(a, b + 1) for a, b in zip(lo, hi))
+            lab[box] = 1
+            t = np.maximum(1, np.round(1.0 / np.sqrt((aff[:3, :3] ** 2).sum(0))).astype(int))  # ~1 mm thick
+            inner = tuple(slice(a + w, b + 1 - w) for a, b, w in zip(lo, hi, t))
+            lab[inner] = 0
+            volume.save(f, lab, aff)
+        return f
+
     def coregister(self, crop_center=None, crop_radius=None, from_current=False):
         ct, mri = self.volume("ct"), self.volume("mri")
+        roi = self.subject.get("roi")
+        if roi and crop_center is None:
+            crop_center, crop_radius = roi["center"], np.array(roi["size"]) / 2
         c = self.subject.get("coreg")
         init = np.array(c["ct_to_mri"]) if from_current and c else None
         m, metric = register.coregister(ct.data, self.corrected_affine("ct"), mri.data, self.corrected_affine("mri"),
@@ -602,6 +644,7 @@ class Project:
         leads = [{k: L.get(k) for k in ("name", "hemisphere", "preset", "curved", "fit", "tip_mri", "entry_mri")}
                  | {"contacts": [r for r in contacts if r["lead"] == L["name"]]} for L in self.leads]
         return {"name": self.root.name, "species": sub["species"], "scans": scans, "coreg": sub.get("coreg"),
+                "roi": sub.get("roi"),
                 "leads": leads, "can_undo": bool(self.undo_stack), "can_redo": bool(self.redo_stack),
                 "folder": str(self.root)}
 

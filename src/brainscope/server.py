@@ -178,7 +178,7 @@ def get_project(h, name, q):
     return _summary(h, h.app.project(name))
 
 
-@route("POST", r"/api/p/([^/]+)/(undo|redo|species|orient|coreg|nudge|coreg-accept|coreg-reset|lead|lead-edit)")
+@route("POST", r"/api/p/([^/]+)/(undo|redo|species|orient|roi|coreg|nudge|coreg-accept|coreg-reset|lead|lead-edit)")
 def mutate(h, name, action, q):
     p = h.app.project(name)
     b = h.body_json()
@@ -197,6 +197,8 @@ def mutate(h, name, action, q):
                          from_current=bool(b.get("from_current")))
         elif action == "nudge":
             p.nudge(b.get("rot", (0, 0, 0)), b.get("trans", (0, 0, 0)))
+        elif action == "roi":
+            p.set_roi(b.get("center"), b.get("size"), clear=bool(b.get("clear")))
         elif action == "coreg-reset":
             p.reset_coreg()
         elif action == "coreg-accept":
@@ -283,6 +285,14 @@ def vol(h, name, role, q):
     p = h.app.project(name)
     with p.lock:
         f = p.display_file(role)
+    return h.file(f)
+
+
+@route("GET", r"/api/p/([^/]+)/vol/roi\.nii\.gz")
+def vol_roi(h, name, q):
+    p = h.app.project(name)
+    with p.lock:
+        f = p.roi_file()
     return h.file(f)
 
 

@@ -56,8 +56,8 @@ def coregister(ct_data, ct_affine, mri_data, mri_affine, species="human", init=N
     if sitk.GetArrayViewFromImage(metal).any():
         metal = sitk.BinaryDilate(metal, [2, 2, 2])
     moving_mask = sitk.Cast(1 - metal, sitk.sitkUInt8)
-    fixed_mask = _box_mask(fixed, mri_affine, crop_center, crop_radius) if crop_center is not None and crop_radius \
-        else None
+    fixed_mask = _box_mask(fixed, mri_affine, crop_center, crop_radius) if crop_center is not None \
+        and crop_radius is not None else None
 
     if init is not None:
         tx = ras_to_sitk(np.linalg.inv(init), center=fixed.TransformContinuousIndexToPhysicalPoint(
@@ -93,9 +93,11 @@ def coregister(ct_data, ct_affine, mri_data, mri_affine, species="human", init=N
 
 
 def _box_mask(fixed, mri_affine, center, radius):
+    """Mask of an axis-aligned box (world axes) around `center`; `radius` = half size, one value or per axis."""
     shape = fixed.GetSize()  # (i, j, k)
     inv = np.linalg.inv(mri_affine)
-    corners = np.array([[center[0] + sx * radius, center[1] + sy * radius, center[2] + sz * radius]
+    h = np.broadcast_to(np.asarray(radius, float), (3,))
+    corners = np.array([[center[0] + sx * h[0], center[1] + sy * h[1], center[2] + sz * h[2]]
                         for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)])
     vox = apply(inv, corners)
     lo = np.clip(np.floor(vox.min(0)).astype(int), 0, np.array(shape) - 1)

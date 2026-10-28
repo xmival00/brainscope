@@ -12,7 +12,7 @@ const S = {
   state: null, p: null, step: 'import', presets: [], orientRole: 'mri', layout: 'multi',
   ctWindow: 'bone', ctOpacity: 0.5, ctVisible: true, base: 'mri', win: { mri: null, ct: null }, winRole: 'ct', align: { ct: null, mri: null }, lead: null, contact: null, view: null,
   draft: { name: '', preset: '', hemisphere: 'n/a', curved: false, tip: null, entry: null },
-  loaded: { base: null, contacts: null }, cropRadius: 70, useCrop: false, nudgeMm: 1, nudgeDeg: 1,
+  loaded: { base: null, contacts: null }, nudgeMm: 1, nudgeDeg: 1,
   exportOpts: { tsv: true, leads_file: true, transforms: true, mri: false, ct: false, labels: false },
   lastExport: null, replaceOnImport: false,
 };
@@ -115,6 +115,26 @@ function contactsKey() {
   const rows = S.p.leads.flatMap((l) => l.contacts.map((c) => [c.x, c.y, c.z]));
   return rows.length && S.p.scans.mri && S.p.coreg && S.step !== 'orient' && S.step !== 'import' ? hkey([rows, scanKey('mri')]) : null;
 }
+function extraLayers() {  // label overlays on the MRI grid: contacts (leads, export) and the coregistration box
+  const out = [];
+  if (!S.p) return out;
+  const ck = contactsKey();
+  if (ck) {
+    const cm = { R: [0], G: [0], B: [0], A: [0], I: [0], labels: [''] };
+    S.p.leads.forEach((l, i) => {
+      const h = leadColor(i);
+      cm.R.push(parseInt(h.slice(1, 3), 16)); cm.G.push(parseInt(h.slice(3, 5), 16)); cm.B.push(parseInt(h.slice(5, 7), 16));
+      cm.A.push(255); cm.I.push(i + 1); cm.labels.push(l.name);
+    });
+    out.push({ key: `c${ck}`, url: `${P('/vol/contacts.nii.gz')}?v=${ck}`, name: `contacts-${ck}.nii.gz`, cm });
+  }
+  if (S.step === 'coreg' && S.p.roi && S.p.scans.mri) {
+    const rk = hkey([S.p.roi, scanKey('mri')]);
+    out.push({ key: `r${rk}`, url: `${P('/vol/roi.nii.gz')}?v=${rk}`, name: `roi-${rk}.nii.gz`,
+      cm: { R: [0, 80], G: [0, 230], B: [0, 120], A: [0, 255], I: [0, 1], labels: ['', 'region of interest'] } });
+  }
+  return out;
+}
 async function refreshViewer() {
   await nvReady;
   $('#empty').hidden = !!(S.p && (S.p.scans.mri || S.p.scans.ct));
@@ -122,7 +142,6 @@ async function refreshViewer() {
   const vols = wantedVolumes();
   vols.forEach((v) => { if (S.win[v.role]) [v.cal_min, v.cal_max] = S.win[v.role]; });  // the user's own window
   const base = hkey([S.p?.name, vols.map((v) => [v.role, scanKey(v.role), v.colormap])]);
-  const ck = S.p ? contactsKey() : null;
   try {
     if (base !== S.loaded.base) {
       S.loaded = { base, contacts: null };
@@ -137,20 +156,15 @@ async function refreshViewer() {
       });
       if (nv.volumes.length) nv.updateGLVolume();
     }
-    if (ck !== S.loaded.contacts) {
+    const extras = extraLayers(), ek = extras.map((x) => x.key).join('|');
+    if (ek !== S.loaded.contacts) {
       while (nv.volumes.length > vols.length) nv.removeVolume(nv.volumes[nv.volumes.length - 1]);
-      if (ck) {
-        await nv.addVolumeFromUrl({ url: `${P('/vol/contacts.nii.gz')}?v=${ck}`, name: `contacts-${ck}.nii.gz`, opacity: 1 });
-        const cm = { R: [0], G: [0], B: [0], A: [0], I: [0], labels: [''] };
-        S.p.leads.forEach((l, i) => {
-          const h = leadColor(i);
-          cm.R.push(parseInt(h.slice(1, 3), 16)); cm.G.push(parseInt(h.slice(3, 5), 16)); cm.B.push(parseInt(h.slice(5, 7), 16));
-          cm.A.push(255); cm.I.push(i + 1); cm.labels.push(l.name);
-        });
-        nv.volumes[nv.volumes.length - 1].setColormapLabel(cm);
-        nv.updateGLVolume();
+      for (const x of extras) {
+        await nv.addVolumeFromUrl({ url: x.url, name: x.name, opacity: 1 });
+        nv.volumes[nv.volumes.length - 1].setColormapLabel(x.cm);
       }
-      S.loaded.contacts = ck;
+      if (extras.length) nv.updateGLVolume();
+      S.loaded.contacts = ek;
     }
   } catch (e) { toast(`Viewer: ${e.message}`, 'error'); }
   $('#ctCtl').style.visibility = vols.length > 1 ? 'visible' : 'hidden';
@@ -391,9 +405,12 @@ function coregHTML() {
       <span class="muted small">Tip: <i>Center</i> (above the images) brings the crosshair back into the image.</span></div>
   </div>
   <div class="card"><b>2. Automatic</b> <span class="muted small">(rigid, mutual information; starts from the current alignment)</span>
-    <label class="row"><input type="checkbox" id="useCrop" ${S.useCrop ? 'checked' : ''}> Only use a box around the crosshair, half-size
-      <input type="number" id="cropR" value="${S.cropRadius}" min="20" max="200"> mm</label>
-    <p class="muted small">Useful for pigs: put the crosshair in the middle of the brain (MRI shown) so muscles and sinuses do not dominate.</p>
+    <p class="small"><b>Region of interest</b> (recommended): only the MRI inside the green box is compared, so the body, the
+    neck and loose soft tissue do not pull the alignment. Put the crosshair in the middle of the brain (MRI shown) and press <i>Box here</i>.</p>
+    <div class="row"><button id="roiHere">Box here</button>
+      ${['x', 'y', 'z'].map((a, i) => `<input type="number" data-roi="${i}" value="${roiSize()[i]}" min="10" max="400" title="${['left–right', 'back–front', 'down–up'][i]} size (mm)">`).join(' × ')} mm
+      <button id="roiClear" class="ghost" ${S.p.roi ? '' : 'disabled'}>Clear</button></div>
+    <p class="muted small">${S.p.roi ? `Box at ${S.p.roi.center.map((x) => fmt(x, 0)).join(', ')} mm is used.` : 'No box: the whole MRI is used.'}</p>
     <div class="row"><button class="primary" id="runCoreg" ${ready ? '' : 'disabled'}>${c ? 'Refine from current alignment' : 'Run coregistration'}</button>
     <button id="resetCoreg" class="ghost" ${c ? '' : 'disabled'}>Start over</button></div>
   </div>
@@ -418,10 +435,11 @@ function bindCoreg() {
     S.align = { ct: null, mri: null };
     if (await act('/nudge', { trans: t }, 'Moving the CT…')) { setBase('mri'); goTo(S.p.scans.mri.center); }
   };
-  $('#useCrop').onchange = (e) => { S.useCrop = e.target.checked; };
-  $('#cropR').onchange = (e) => { S.cropRadius = Number(e.target.value); };
-  $('#runCoreg').onclick = () => act('/coreg', { from_current: !!S.p.coreg, ...(S.useCrop ? { crop_center: crosshairMM(), crop_radius: S.cropRadius } : {}) },
-    'Coregistering (usually under a minute)…');
+  const sizes = () => $$('[data-roi]').map((el) => Number(el.value));
+  $('#roiHere').onclick = () => { const m = crosshairMM(); if (m) act('/roi', { center: m, size: sizes() }); };
+  $$('[data-roi]').forEach((el) => { el.onchange = () => { if (S.p.roi) act('/roi', { center: S.p.roi.center, size: sizes() }); }; });
+  $('#roiClear').onclick = () => act('/roi', { clear: true });
+  $('#runCoreg').onclick = () => act('/coreg', { from_current: !!S.p.coreg }, 'Coregistering (usually under a minute)…');
   $('#resetCoreg').onclick = () => act('/coreg-reset', {});
   $('#nMm').onchange = (e) => { S.nudgeMm = Number(e.target.value); };
   $('#nDeg').onchange = (e) => { S.nudgeDeg = Number(e.target.value); };
@@ -429,6 +447,16 @@ function bindCoreg() {
   $$('[data-r]').forEach((b) => { b.onclick = () => { const r = [0, 0, 0]; r[b.dataset.r] = S.nudgeDeg * b.dataset.s; act('/nudge', { rot: r }); }; });
   if ($('#accept')) $('#accept').onclick = () => act('/coreg-accept', { accepted: !S.p.coreg.accepted });
   $('#next').onclick = () => goStep('leads');
+}
+function roiSize() {  // edge lengths (mm) of the box: the saved one, or a default for the species
+  return S.p.roi?.size.map((x) => Math.round(x)) || ({ human: [150, 180, 140], pig: [80, 100, 70] }[S.p.species] || [110, 130, 100]);
+}
+function zoom(factor) {  // 2D zoom around the crosshair (Niivue's own formula); factor 0 = fit
+  if (!nv.volumes.length) return;
+  if (!factor) { nv.setPan2Dxyzmm([0, 0, 0, 1]); return; }
+  const p = [...nv.scene.pan2Dxyzmm], c = crosshairMM();
+  const z = Math.min(20, Math.max(0.5, Math.round(p[3] * factor * 10) / 10)), e = p[3] - z;
+  nv.setPan2Dxyzmm([p[0] + e * c[0], p[1] + e * c[1], p[2] + e * c[2], z]);
 }
 function setBase(b) {
   S.base = b;
@@ -798,6 +826,9 @@ document.addEventListener('keydown', (e) => {
   if (S.step === 'leads' && k === 't') setPoint('tip');
   if (S.step === 'leads' && k === 'e') setPoint('entry');
   if (k === 'o') { S.ctVisible = !S.ctVisible; refreshViewer(); }
+  if (k === '+' || k === '=') zoom(1.4);
+  if (k === '-') zoom(1 / 1.4);
+  if (k === '0') zoom(0);
 });
 $$('#steps button').forEach((b) => { b.onclick = () => goStep(b.dataset.step); });
 $$('#layout button').forEach((b) => { b.onclick = () => setLayout(b.dataset.layout); });
@@ -808,6 +839,9 @@ $('#winHi').onchange = setWindow;
 $('#winAuto').onclick = () => { S.win[S.winRole] = null; refreshViewer(); };
 $$('#base button').forEach((b) => { b.onclick = () => setBase(b.dataset.base); });
 $('#centerView').onclick = centerView;
+$('#zoomIn').onclick = () => zoom(1.4);
+$('#zoomOut').onclick = () => zoom(1 / 1.4);
+$('#zoomFit').onclick = () => zoom(0);
 $('#ctOpacity').oninput = (e) => { S.ctOpacity = Number(e.target.value); S.ctVisible = true; refreshViewer(); };
 $('#projectSelect').onchange = (e) => openProject(e.target.value);
 $('#newProject').onclick = newProject;

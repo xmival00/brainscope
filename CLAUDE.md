@@ -36,6 +36,7 @@ demo case (`brainscope demo DIR`), see git history for the script pattern.
   installers workflow (draft pre-release on tag, no artifacts); tests (synthetic ground truth, DICOM round trip,
   HTTP API). Pre-releases: v0.1.0; v0.1.1 (DICOM fallback, more formats, orientation aids);
   v0.1.2 (lenient DICOM sidecars, CT intensity levels, manual window, CT overlay before coregistration);
-  v0.1.3 (display copies of large scans, landmark rough alignment, Center button, logo, Apple silicon only).
+  v0.1.3 (display copies of large scans, landmark rough alignment, Center button, logo, Apple silicon only);
+  v0.1.4 (zoom, coregistration region-of-interest box).
 - Next: the user tests on real human and pig data and sends debug bundles; tune detection on them (DBS leads,
   contacts mostly not separable); answer `docs/PLAN.md` section 10.

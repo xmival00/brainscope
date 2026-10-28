@@ -43,6 +43,7 @@ From the user (2026-10-28):
 | D21 | macOS: Apple silicon only; no Intel Mac build. |
 | D22 | Large scans: the viewer gets a display copy (CT cropped to the MRI's field of view once coregistered, then averaged down to at most 40 M voxels; MRI up to 100 M); a 512x512x1137 CT failed to load otherwise. Engine always uses the full scan. |
 | D23 | Coregistration: a rough alignment by one landmark clicked in each scan (CT and MRI scanner coordinates can be unrelated, and the CT can cover the whole body), then the automatic step starts from the current alignment; "Start over" resets it. A "Center" button brings the crosshair back into the image. |
+| D24 | Viewer zoom around the crosshair (buttons, keys + − 0); the mouse wheel keeps scrolling slices. Coregistration region of interest: a box (edge lengths per axis, default by species) saved in the project and shown as a green outline; only the MRI inside it is compared. |
 
 Decided during implementation (the user delegated these, 2026-10-28):
 

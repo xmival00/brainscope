@@ -39,7 +39,8 @@ Projects are stored in `~/brainscope-projects` (change with `brainscope app --pr
    head is upright, the nose points forward and the subject's left is on the screen left (neurological view).
    Confirm which side is left (e.g. from the CT marker). Only the header changes; voxels are never resampled.
 3. **Coregister** the CT to the MRI. If the scanners' coordinates differ or the CT covers more than the head, first
-   click the same landmark in both scans (*rough alignment*); the automatic step then starts from there. The CT is
+   click the same landmark in both scans (*rough alignment*); the automatic step then starts from there. Put a
+   *region-of-interest* box around the brain so the body and loose soft tissue are ignored. The CT is
    overlaid from the start; set the display window of either scan in the viewer bar; *Center* finds the image (rigid, mutual information). For pigs, optionally restrict it to a box around
    the brain. Check with the CT overlay, adjust by hand if needed, accept.
 4. **Leads**: for each lead, put the crosshair on its deepest end and press <kbd>T</kbd>, on a point further
