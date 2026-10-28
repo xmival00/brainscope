@@ -8,6 +8,7 @@ import pytest
 from brainscope import demo, volume
 from brainscope.project import Project
 from brainscope.server import make_server
+from brainscope.transforms import apply
 
 
 @pytest.fixture(scope="module")
@@ -138,6 +139,16 @@ def test_acpc_coordinates_and_plan(tmp_path, case):
     assert res["dx"] == pytest.approx(-1, abs=1e-3) and res["dy"] == pytest.approx(0, abs=1e-3)
     p.export(space="acpc")
     tsv = (tmp_path / "p1" / "outputs" / "sub-01_electrodes.tsv").read_text().splitlines()
-    head = tsv[1].split("\t")
-    assert head[1:4] == head[-3:]                       # x, y, z are the AC/PC columns
+    cols, row = tsv[0].split("\t"), tsv[1].split("\t")
+    assert row[1:4] == [row[cols.index(c)] for c in ("acpc_x", "acpc_y", "acpc_z")]  # x, y, z are AC/PC
     assert (tmp_path / "p1" / "outputs" / "sub-01_plan_vs_delivered.tsv").exists()
+
+
+def test_acpc_follows_a_later_mri_reorientation(tmp_path, case):
+    d, _ = case
+    p = Project.create(tmp_path / "p3")
+    p.import_scan("mri", d / "mri.nii.gz")
+    p.set_acpc("ac", (1, 10, 2))
+    ijk = apply(np.linalg.inv(p.corrected_affine("mri")), [1, 10, 2])
+    p.orient("mri", "rz+")
+    assert np.allclose(apply(p.corrected_affine("mri"), ijk), p.subject["acpc"]["ac"])  # same voxel, same anatomy

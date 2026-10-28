@@ -46,7 +46,8 @@ From the user (2026-10-28):
 | D24 | Viewer zoom around the crosshair (buttons, keys + − 0); the mouse wheel keeps scrolling slices. Coregistration region of interest: a box (edge lengths per axis, default by species) saved in the project and shown as a green outline; only the MRI inside it is compared. |
 | D25 | AC/PC: the user marks AC, PC and a midline point on the MRI (own step). +y from PC to AC, +z towards the midline point, +x to the subject's right; origin mid-commissural point (default), AC or PC. Every contact gets AC/PC coordinates; the export can use them as the main x, y, z (BIDS "ACPC" when the origin is AC). |
 | D26 | Planned versus delivered: per lead, a planned target (and optional entry) in AC/PC or MRI coordinates is compared with the lead tip or a chosen contact: error vector, distance, and with an entry the depth and radial error. Exported as `plan_vs_delivered.tsv`. |
-| D27 | Stereotactic frame (Leksell-compatible localizer box) detection: planned, waiting for the localizer geometry and an example CT (section 10). |
+| D27 | Stereotactic frame from an N-bar localizer (Leksell-compatible): configurable plate model (default Leksell-style geometry, marked unverified until the user checks it), rods found in the CT, grouped into N plates, rigid fit over all 24 mountings and plate subsets (2 or 3 plates). Equally good fits (e.g. two lateral plates: up/down + front/back ambiguous) are ranked by an expected mounting the user can set from a chosen fit. Contacts, AC/PC and plans get frame coordinates. |
+| D28 | Step order: Import, Orient, AC/PC (MRI alone, full resolution), Coregister, Frame, Leads, Targets (planned vs delivered, separate from detection), Export. Leads step uses the finer scan as the base image. Points on the MRI (AC/PC, ROI box) follow a later MRI re-orientation. |
 
 Decided during implementation (the user delegated these, 2026-10-28):
 
@@ -221,8 +222,7 @@ What v1 already does so these plug in:
 ## 10. Open questions
 
 1. Display: confirm "left is on left" = neurological display (D6). Implemented that way.
-2. Fiducial box (D27): exact localizer model and its rod geometry (or a manual); does the CT include the box; frame
-   coordinate convention wanted (Leksell X/Y/Z, origin, axis directions); planned targets given in frame coordinates
-   (X, Y, Z, ring/arc angles)?
+2. Localizer geometry (D27): verify the default plate/rod positions and diagonal directions against the real localizer
+   (or send the specification); a debug bundle of a CT with the box would let us test detection on real rods.
 3. Which point is the "delivered target": the lead tip, the deepest contact centre, or a chosen contact (all three
-   are supported now)?
+   are supported)?

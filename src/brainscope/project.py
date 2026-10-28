@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import datetime
+import itertools
 import hashlib
 import json
 import os
@@ -22,6 +23,7 @@ import numpy as np
 from scipy import ndimage
 
 from . import __version__, acpc, detect, register, volume
+from . import localizer as loc
 from . import orientation as ori
 from . import presets as pr
 from .transforms import apply, rigid, write_itk
@@ -35,7 +37,7 @@ DISPLAY_MAX_VOXELS = {"mri": 100e6, "ct": 40e6}  # larger volumes fail to load i
 DISPLAY_MARGIN_MM = 20.0
 TSV_COLUMNS = ["name", "x", "y", "z", "size", "group", "type", "material", "manufacturer", "hemisphere",
                "lead", "contact_index", "mri_i", "mri_j", "mri_k", "ct_x", "ct_y", "ct_z", "fit_mode",
-               "confidence", "acpc_x", "acpc_y", "acpc_z"]
+               "confidence", "acpc_x", "acpc_y", "acpc_z", "frame_x", "frame_y", "frame_z"]
 PLAN_COLUMNS = ["lead", "point", "space", "planned_x", "planned_y", "planned_z", "delivered_x", "delivered_y",
                 "delivered_z", "dx", "dy", "dz", "distance", "depth", "radial"]
 
@@ -210,7 +212,16 @@ class Project:
         s = self.scan(role)
         self.checkpoint()
         if reset or op:
+            before = self.correction(role)
             s["orient"] = (np.eye(3, dtype=int) if reset else ori.apply_op(s["orient"], op)).tolist()
+            if role == "mri":  # points marked on the MRI stay on the same anatomy
+                move = self.correction("mri") @ np.linalg.inv(before)
+                a = self.subject.get("acpc") or {}
+                for k in acpc.POINTS:
+                    if k in a:
+                        a[k] = apply(move, a[k]).tolist()
+                if self.subject.get("roi"):
+                    self.subject["roi"]["center"] = apply(move, self.subject["roi"]["center"]).tolist()
             s["left_confirmed"] = False
             self.subject["coreg"] = None  # the corrected spaces changed
         if left_confirmed is not None:
@@ -362,8 +373,8 @@ class Project:
                 lead.pop("plan", None)
             else:
                 space, point = kw.get("space", "acpc"), str(kw.get("point", "tip"))
-                if space not in ("acpc", "mri"):
-                    raise ValueError("space must be 'acpc' or 'mri'")
+                if space not in ("acpc", "mri", "frame"):
+                    raise ValueError("space must be 'acpc', 'frame' or 'mri'")
                 if point != "tip" and not (point[:1] == "c" and point[1:].isdigit()
                                            and int(point[1:]) < len(lead["contacts"])):
                     raise ValueError("point must be 'tip' or 'c<contact number>'")
@@ -385,6 +396,7 @@ class Project:
         c_ct = self.correction("ct")
         inv_mri = np.linalg.inv(self.corrected_affine("mri"))
         to_acpc = self.acpc_matrix()
+        to_frame = self.frame_matrix()
         rows = []
         for L in self.leads if lead is None else [self.leads[self.lead_index(lead)]]:
             raw = detect.positions(L)
@@ -393,7 +405,8 @@ class Project:
             p = L["preset"]
             xyz, ijk, ctc = apply(m, raw), apply(inv_mri, apply(m, raw)), apply(c_ct, raw)
             ap = apply(to_acpc, xyz) if to_acpc is not None else [[None] * 3] * len(xyz)
-            for c, a, b, d, e in zip(L["contacts"], xyz, ijk, ctc, ap):
+            fr = apply(to_frame, ctc) if to_frame is not None else [[None] * 3] * len(xyz)
+            for c, a, b, d, e, f in zip(L["contacts"], xyz, ijk, ctc, ap, fr):
                 rows.append({
                     "name": pr.label(p, L["name"], c["index"]), "x": a[0], "y": a[1], "z": a[2],
                     "size": np.pi * p["diameter_mm"] * p["contact_length_mm"], "group": L["name"],
@@ -401,7 +414,8 @@ class Project:
                     "manufacturer": p.get("manufacturer", ""), "hemisphere": L.get("hemisphere", "n/a"),
                     "lead": L["name"], "contact_index": c["index"], "mri_i": b[0], "mri_j": b[1], "mri_k": b[2],
                     "ct_x": d[0], "ct_y": d[1], "ct_z": d[2], "fit_mode": c["mode"], "confidence": c["confidence"],
-                    "acpc_x": e[0], "acpc_y": e[1], "acpc_z": e[2], "s": c["s"]})
+                    "acpc_x": e[0], "acpc_y": e[1], "acpc_z": e[2], "frame_x": f[0], "frame_y": f[1],
+                    "frame_z": f[2], "s": c["s"]})
         return rows
 
     # ---- AC/PC ----
@@ -444,6 +458,83 @@ class Project:
             volume.save(f, _balls(tuple(self.scan("mri")["shape"]), aff, pts, 1.5), aff)
         return f
 
+    # ---- stereotactic frame (N-bar localizer) ----
+    def frame_model(self):
+        f = self.subject.get("frame") or {}
+        return f.get("model") or loc.default_model()
+
+    def set_frame_model(self, model=None, reset=False):
+        m = loc.default_model() if reset else loc.validate(model)
+        f = self.subject.get("frame") or {}
+        self.checkpoint()
+        if f.get("model") and f["model"]["plates"] == m["plates"] and not reset:
+            f["model"] = m  # same rods (e.g. only the expected mounting or the notes changed): keep the fit
+        else:
+            self.subject["frame"] = {"model": m}  # new geometry: an earlier fit no longer applies
+        self.save()
+
+    def detect_frame(self, threshold=None):
+        ct = self.volume("ct")
+        thr = float(threshold) if threshold not in (None, "") else float(self.ct_levels()["overlay_bone"][0]) + 200
+        model = self.frame_model()
+        lines, groups, fits = loc.detect(ct.data, self.corrected_affine("ct"), model, thr)
+        rods = [[(L["c"] + L["t0"] * L["u"]).tolist(), (L["c"] + L["t1"] * L["u"]).tolist()]
+                for g in groups for L in (lines[i] for i in g)]
+        self.checkpoint()
+        self.subject["frame"] = {"model": model, "threshold": thr, "rods": rods, "chosen": 0, "when": _now(),
+                                 "fits": [dict(f, matrix=f["matrix"].tolist(), rms=round(f["rms"], 3)) for f in fits]}
+        self.save()
+
+    def choose_frame(self, index):
+        f = self.subject.get("frame") or {}
+        if not 0 <= int(index) < len(f.get("fits", [])):
+            raise ValueError("no such fit")
+        self.checkpoint()
+        f["chosen"] = int(index)
+        self.save()
+
+    def frame_matrix(self):
+        """CT (orientation-corrected) world -> frame coordinates, or None without a fitted frame."""
+        f = self.subject.get("frame") or {}
+        if not f.get("fits"):
+            return None
+        return np.array(f["fits"][f.get("chosen", 0)]["matrix"], float)
+
+    def frame_from_mri(self):
+        m = self.frame_matrix()
+        return None if m is None or not self.subject.get("coreg") else m @ np.linalg.inv(self.coreg_matrix())
+
+    def frame_file(self):
+        """Viewer overlay in the CT display world: detected rods (1) and the fitted model's rods (2)."""
+        f = self.subject.get("frame") or {}
+        to_disp = self.coreg_matrix() if self.subject.get("coreg") else np.eye(4)
+        segs = [(1, np.array(a), np.array(b)) for a, b in f.get("rods", [])]
+        m = self.frame_matrix()
+        if m is not None:
+            inv = np.linalg.inv(m)
+            segs += [(2, apply(inv, a), apply(inv, b)) for _, a, b in loc.segments(f["model"])]
+        segs = [(v, apply(to_disp, a), apply(to_disp, b)) for v, a, b in segs]
+        if not segs:
+            raise ValueError("no frame detected yet")
+        key = hashlib.sha1(json.dumps([[v, a.tolist(), b.tolist()] for v, a, b in segs]).encode()).hexdigest()[:12]
+        out = self.root / "cache" / f"frame-{key}.nii.gz"
+        if not out.exists():
+            for old in (self.root / "cache").glob("frame-*.nii.gz"):
+                old.unlink()
+            pts = np.vstack([np.vstack([a, b]) for _, a, b in segs])
+            lo, hi = pts.min(0) - 5, pts.max(0) + 5
+            aff = np.diag([1.0, 1.0, 1.0, 1.0])
+            aff[:3, 3] = lo
+            lab = np.zeros(tuple(np.ceil(hi - lo).astype(int) + 1), np.uint8)
+            for v, a, b in segs:
+                n = int(np.linalg.norm(b - a) * 2) + 2
+                vox = np.round(a + np.linspace(0, 1, n)[:, None] * (b - a) - lo).astype(int)
+                for d in itertools.product((-1, 0, 1), repeat=3):  # ~3 mm thick for visibility
+                    q = np.clip(vox + np.array(d), 0, np.array(lab.shape) - 1)
+                    lab[q[:, 0], q[:, 1], q[:, 2]] = np.maximum(lab[q[:, 0], q[:, 1], q[:, 2]], v)
+            volume.save(out, lab, aff)
+        return out
+
     # ---- planned versus delivered ----
     def delivered_point(self, L, point="tip"):
         """MRI-world position of the lead tip (\"tip\") or of contact k (\"c<k>\")."""
@@ -461,6 +552,11 @@ class Project:
             if m is None:
                 return {"error": "set AC, PC and the midline point first"}
             p = apply(m, p)
+        elif pl["space"] == "frame":
+            m = self.frame_from_mri()
+            if m is None:
+                return {"error": "detect the stereotactic frame first"}
+            p = apply(m, p)
         res = acpc.compare(pl["target"], p, pl.get("entry"))
         res["delivered"] = [round(float(x), 3) for x in p]
         return res
@@ -474,7 +570,7 @@ class Project:
         return detect.cross_section(ct.data, ct.affine, self.leads[self.lead_index(name)], s)
 
     # ---- files for the viewer ----
-    def display_file(self, role):
+    def display_file(self, role, crop=True):
         """What the viewer loads: the scan with its corrected header (CT: also coregistered). A large CT is cropped
         to the MRI's field of view once coregistered, and anything still too large is averaged down; this is for
         display only (detection and registration always use the full scan)."""
@@ -485,10 +581,15 @@ class Project:
         if role == "ct" and c:
             aff = np.array(c["ct_to_mri"]) @ aff
         lo, hi = np.zeros(3, int), shape.copy()
-        if role == "ct" and c and self.scan("mri", required=False):
-            n = np.array(self.scan("mri")["shape"]) - 1
-            corners = apply(self.corrected_affine("mri"), [[i * n[0], j * n[1], k * n[2]]
-                                                           for i in (0, 1) for j in (0, 1) for k in (0, 1)])
+        if role == "ct" and c and crop and self.scan("mri", required=False):
+            roi = self.subject.get("roi")
+            if roi:  # the region of interest (+ margin) is enough, and keeps the CT at full resolution
+                h, ce = np.array(roi["size"]) / 2, np.array(roi["center"])
+                corners = np.array([ce + h * np.array([i, j, k]) for i in (-1, 1) for j in (-1, 1) for k in (-1, 1)])
+            else:
+                n = np.array(self.scan("mri")["shape"]) - 1
+                corners = apply(self.corrected_affine("mri"), [[i * n[0], j * n[1], k * n[2]]
+                                                               for i in (0, 1) for j in (0, 1) for k in (0, 1)])
             vox = apply(np.linalg.inv(aff), corners)
             margin = DISPLAY_MARGIN_MM / np.sqrt((aff[:3, :3] ** 2).sum(0))
             lo = np.clip(np.floor(vox.min(0) - margin).astype(int), 0, shape)
@@ -499,9 +600,10 @@ class Project:
         whole = not lo.any() and np.array_equal(hi, shape) and np.prod(shape.astype(float)) <= limit
         key = hashlib.sha1(np.round(aff, 5).tobytes() + s["sha256"].encode() + lo.tobytes() + hi.tobytes()
                            + str(limit).encode()).hexdigest()[:12]
-        f = self.root / "cache" / f"{role}-{key}.nii"
+        prefix = f"{role}-{'view' if crop else 'full'}"
+        f = self.root / "cache" / f"{prefix}-{key}.nii"
         if not f.exists():
-            for old in (self.root / "cache").glob(f"{role}-*.nii"):
+            for old in (self.root / "cache").glob(f"{prefix}-*.nii"):
                 old.unlink()
             if whole:
                 volume.save_reheadered(self.path(role), f, aff)
@@ -611,6 +713,16 @@ class Project:
                       "iEEGCoordinateSystemDescription": f"AC/PC coordinates, origin at {origin}: +y from PC "
                       "towards AC, +z towards the midline point (superior), +x to the subject's right; mm.",
                       "BrainscopeACPC": a}
+            elif space == "frame":
+                if self.frame_matrix() is None:
+                    raise ValueError("detect the stereotactic frame first, or export in MRI space")
+                for r in rows:
+                    r["x"], r["y"], r["z"] = r["frame_x"], r["frame_y"], r["frame_z"]
+                fm = self.subject["frame"]["model"]
+                cs = {"iEEGCoordinateSystem": "Other",
+                      "iEEGCoordinateSystemDescription": f"Stereotactic frame coordinates ({fm['name']}): "
+                      f"{fm.get('axes', '')}; mm. Localizer geometry verified: {bool(fm.get('verified'))}.",
+                      "BrainscopeFrameFit": {k: v for k, v in self.subject["frame"].items() if k != "rods"}}
             else:
                 cs = {"iEEGCoordinateSystem": "Other",
                       "iEEGCoordinateSystemDescription": "World coordinates (RAS+, mm) of the orientation-corrected "
@@ -754,10 +866,16 @@ class Project:
                          | {"contacts": [r for r in contacts if r["lead"] == L["name"]], "plan_result": pr_})
         am = self.acpc_matrix()
         a = sub.get("acpc") or {}
+        fr = sub.get("frame") or {}
+        fm = self.frame_matrix() if scans.get("ct") else None
+        disp = fm @ np.linalg.inv(self.coreg_matrix()) if fm is not None and sub.get("coreg") else fm
         return {"name": self.root.name, "species": sub["species"], "scans": scans, "coreg": sub.get("coreg"),
                 "roi": sub.get("roi"), "acpc": sub.get("acpc"), "acpc_matrix": am.tolist() if am is not None else None,
                 "acpc_distance": round(float(np.linalg.norm(np.subtract(a["ac"], a["pc"]))), 2)
                 if "ac" in a and "pc" in a else None,
+                "frame": {k: v for k, v in fr.items() if k != "rods"} | {"model": self.frame_model(),
+                                                                         "n_rods": len(fr.get("rods", []))},
+                "frame_from_display": disp.tolist() if disp is not None else None,
                 "leads": leads, "can_undo": bool(self.undo_stack), "can_redo": bool(self.redo_stack),
                 "folder": str(self.root)}
 

@@ -6,6 +6,7 @@ const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmt = (v, d = 2) => (v === null || v === undefined || Number.isNaN(v) ? '–' : Number(v).toFixed(d));
 const hkey = (o) => { const s = JSON.stringify(o); let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); };
+const xf = (a, m) => [0, 1, 2].map((i) => a[i][0] * m[0] + a[i][1] * m[1] + a[i][2] * m[2] + a[i][3]);  // 4x4 · point
 const LEAD_COLORS = ['#ff5d5d', '#3fa7ff', '#3ecf8e', '#f0b429', '#c77dff', '#ff8fab', '#5ce1e6', '#ffd166', '#a3e635', '#fb923c'];
 
 const S = {
@@ -70,6 +71,8 @@ function updateCoords() {
     const q = [0, 1, 2].map((i) => a[i][0] * m[0] + a[i][1] * m[1] + a[i][2] * m[2] + a[i][3]);
     t += `   AC/PC  x ${fmt(q[0], 1)}  y ${fmt(q[1], 1)}  z ${fmt(q[2], 1)}`;
   }
+  const fd = S.p?.frame_from_display;
+  if (m && fd && S.step !== 'orient') { const q = xf(fd, m); t += `   frame  X ${fmt(q[0], 1)}  Y ${fmt(q[1], 1)}  Z ${fmt(q[2], 1)}`; }
   $('#coords').textContent = t;
 }
 function goTo(mm) {
@@ -99,6 +102,7 @@ function wantedVolumes() {
     if (p.scans[r]) out.push({ role: r, colormap: 'gray', ...(r === 'ct' ? { cal_min: ctLevels().orient[0], cal_max: ctLevels().orient[1] } : {}) });
     return out;
   }
+  if (S.step === 'acpc') return p.scans.mri ? [{ role: 'mri', colormap: 'gray' }] : [];  // MRI alone, full resolution
   const fused = p.scans.mri && p.scans.ct;  // before coregistration the CT is placed by its header
   const overlay = S.ctVisible ? S.ctOpacity : 0;
   if (fused && S.base === 'ct') {  // CT at its own resolution shows thin leads; MRI blended on top
@@ -113,8 +117,8 @@ function wantedVolumes() {
   return out;
 }
 function volSpec(v) {
-  const k = scanKey(v.role);
-  return { url: `${P(`/vol/${v.role}.nii`)}?v=${k}`, name: `${v.role}-${k}.nii`, colormap: v.colormap,
+  const k = scanKey(v.role), full = v.role === 'ct' && S.step === 'frame';  // the frame step needs the uncropped CT
+  return { url: `${P(`/vol/${v.role}.nii`)}?v=${k}${full ? '&full=1' : ''}`, name: `${v.role}-${full ? 'full-' : ''}${k}.nii`, colormap: v.colormap,
     opacity: v.opacity ?? 1, ...(v.cal_min !== undefined ? { cal_min: v.cal_min, cal_max: v.cal_max } : {}) };
 }
 function contactsKey() {
@@ -140,6 +144,12 @@ function extraLayers() {  // label overlays on the MRI grid: contacts (leads, ex
     out.push({ key: `a${ak}`, url: `${P('/vol/acpc.nii.gz')}?v=${ak}`, name: `acpc-${ak}.nii.gz`,
       cm: { R: [0, 255, 63, 62], G: [0, 93, 167, 207], B: [0, 93, 255, 142], A: [0, 255, 255, 255], I: [0, 1, 2, 3], labels: ['', 'AC', 'PC', 'midline'] } });
   }
+  const fr = S.p.frame || {};
+  if (S.step === 'frame' && fr.n_rods) {
+    const fk = hkey([fr.when, fr.chosen, S.p.coreg?.ct_to_mri]);
+    out.push({ key: `f${fk}`, url: `${P('/vol/frame.nii.gz')}?v=${fk}`, name: `frame-${fk}.nii.gz`,
+      cm: { R: [0, 255, 60], G: [0, 210, 220], B: [0, 40, 255], A: [0, 255, 255], I: [0, 1, 2], labels: ['', 'detected rods', 'fitted model'] } });
+  }
   if (S.step === 'coreg' && S.p.roi && S.p.scans.mri) {
     const rk = hkey([S.p.roi, scanKey('mri')]);
     out.push({ key: `r${rk}`, url: `${P('/vol/roi.nii.gz')}?v=${rk}`, name: `roi-${rk}.nii.gz`,
@@ -153,7 +163,7 @@ async function refreshViewer() {
   $('#empty').textContent = S.p ? 'Import an MRI and a CT to start.' : 'Create or open a project to start.';
   const vols = wantedVolumes();
   vols.forEach((v) => { if (S.win[v.role]) [v.cal_min, v.cal_max] = S.win[v.role]; });  // the user's own window
-  const base = hkey([S.p?.name, vols.map((v) => [v.role, scanKey(v.role), v.colormap])]);
+  const base = hkey([S.p?.name, S.step === 'frame', vols.map((v) => [v.role, scanKey(v.role), v.colormap])]);
   try {
     if (base !== S.loaded.base) {
       S.loaded = { base, contacts: null };
@@ -249,8 +259,10 @@ function render() {
   });
   const panel = $('#panel');
   if (!S.p) { panel.innerHTML = welcomeHTML(); bindWelcome(); $('#inspector').hidden = true; return; }
-  panel.innerHTML = { import: importHTML, orient: orientHTML, coreg: coregHTML, acpc: acpcHTML, leads: leadsHTML, export: exportHTML }[S.step]();
-  ({ import: bindImport, orient: bindOrient, coreg: bindCoreg, acpc: bindAcpc, leads: bindLeads, export: bindExport })[S.step]();
+  panel.innerHTML = { import: importHTML, orient: orientHTML, coreg: coregHTML, acpc: acpcHTML, frame: frameHTML, leads: leadsHTML,
+    targets: targetsHTML, export: exportHTML }[S.step]();
+  ({ import: bindImport, orient: bindOrient, coreg: bindCoreg, acpc: bindAcpc, frame: bindFrame, leads: bindLeads, targets: bindTargets,
+    export: bindExport })[S.step]();
   $('#inspector').hidden = !(S.step === 'leads' && S.lead);
 }
 function stepStatus(step) {
@@ -262,6 +274,8 @@ function stepStatus(step) {
     case 'orient': return sc.mri?.left_confirmed && sc.ct?.left_confirmed ? 'done' : (sc.mri || sc.ct ? 'warn' : 'todo');
     case 'coreg': return p.coreg?.accepted ? 'done' : (p.coreg ? 'warn' : 'todo');
     case 'acpc': return p.acpc_matrix ? 'done' : (p.acpc ? 'warn' : 'todo');
+    case 'frame': return p.frame?.fits?.length ? (p.frame.model.verified ? 'done' : 'warn') : 'todo';
+    case 'targets': return p.leads.some((l) => l.plan) ? 'done' : 'todo';
     case 'leads': return p.leads.length ? 'done' : 'todo';
     default: return 'todo';
   }
@@ -372,7 +386,7 @@ function orientHTML() {
   <div class="card"><label class="row"><input type="checkbox" id="leftOk" ${s.left_confirmed ? 'checked' : ''}> The subject's left is on the screen left in this scan</label>
   <div class="row"><input type="text" id="leftNote" placeholder="how you know (e.g. CT marker)" value="${esc(s.left_note)}" style="flex:1"></div>
   <p class="muted small">A left–right mirror cannot be detected from the images. Rotating or mirroring clears this confirmation.</p></div>
-  <div class="row"><span class="spacer"></span><button class="primary" id="next">Next: coregister</button></div>` : '<p class="muted">Import this scan first.</p>'}`;
+  <div class="row"><span class="spacer"></span><button class="primary" id="next">Next: AC/PC</button></div>` : '<p class="muted">Import this scan first.</p>'}`;
 }
 function orientGuideHTML() {  // how each view should look once the scan is oriented (for pigs: up = dorsal, front = snout)
   const t = (x, y, s) => `<text x="${x}" y="${y}" font-size="9" fill="#8b93a1" text-anchor="middle">${s}</text>`;
@@ -397,7 +411,7 @@ function bindOrient() {
       const other = S.orientRole === 'mri' ? 'ct' : 'mri';
       if (!S.p.scans[S.orientRole].left_confirmed) toast(`Left side of the ${S.orientRole.toUpperCase()} is not confirmed yet.`);
       if (S.p.scans[other] && !S.p.scans[other].left_confirmed) { S.orientRole = other; render(); refreshViewer(); return; }
-      goStep('coreg');
+      goStep('acpc');
     };
   }
 }
@@ -436,7 +450,7 @@ function coregHTML() {
   ${axes.map(([a, n], i) => `<div class="row"><label>${n}</label><button data-t="${i}" data-s="-1">−</button><button data-t="${i}" data-s="1">+</button>
     <span class="muted small" style="margin-left:6px">rotate</span><button data-r="${i}" data-s="-1">↺</button><button data-r="${i}" data-s="1">↻</button></div>`).join('')}
   <div class="row"><span class="spacer"></span>${c ? `<button id="accept" class="${c.accepted ? '' : 'primary'}">${c.accepted ? 'Accepted ✓' : 'Accept alignment'}</button>` : ''}
-  <button id="next" ${c ? '' : 'disabled'}>Next: leads</button></div>`;
+  <button id="next" ${c ? '' : 'disabled'}>Next: frame</button></div>`;
 }
 function bindCoreg() {
   $('#showCt').onclick = () => setBase('ct');
@@ -459,7 +473,7 @@ function bindCoreg() {
   $$('[data-t]').forEach((b) => { b.onclick = () => { const t = [0, 0, 0]; t[b.dataset.t] = S.nudgeMm * b.dataset.s; act('/nudge', { trans: t }); }; });
   $$('[data-r]').forEach((b) => { b.onclick = () => { const r = [0, 0, 0]; r[b.dataset.r] = S.nudgeDeg * b.dataset.s; act('/nudge', { rot: r }); }; });
   if ($('#accept')) $('#accept').onclick = () => act('/coreg-accept', { accepted: !S.p.coreg.accepted });
-  $('#next').onclick = () => goStep('leads');
+  $('#next').onclick = () => goStep('frame');
 }
 function roiSize() {  // edge lengths (mm) of the box: the saved one, or a default for the species
   return S.p.roi?.size.map((x) => Math.round(x)) || ({ human: [150, 180, 140], pig: [80, 100, 70] }[S.p.species] || [110, 130, 100]);
@@ -530,7 +544,7 @@ function leadDetailHTML(l) {
   ${c !== null && c !== undefined ? `<div class="row"><span class="muted small">Contact ${esc(l.contacts[c]?.name)}:</span>
     <button data-mv="-0.5">−0.5</button><button data-mv="-0.1">−0.1</button><button data-mv="0.1">+0.1</button><button data-mv="0.5">+0.5</button>
     <button id="anchor" title="Keep this contact here and fit the others to it">Fit others to it</button></div>` : ''}
-  ${planHTML(l)}`;
+`;
 }
 function planHTML(l) {  // planned target versus the delivered lead
   const pl = l.plan || { target: ['', '', ''], space: S.p.acpc_matrix ? 'acpc' : 'mri', point: 'tip', entry: null };
@@ -538,6 +552,7 @@ function planHTML(l) {  // planned target versus the delivered lead
   const xyz = (id, v) => ['x', 'y', 'z'].map((a, i) => `<input type="number" step="any" id="${id}${i}" value="${v ? v[i] : ''}" placeholder="${a}" style="width:64px">`).join('');
   return `<h3>Planned target</h3><div class="card">
     <div class="row"><label>space</label><select id="plSpace"><option value="acpc" ${pl.space === 'acpc' ? 'selected' : ''}>AC/PC</option>
+      <option value="frame" ${pl.space === 'frame' ? 'selected' : ''}>frame</option>
       <option value="mri" ${pl.space === 'mri' ? 'selected' : ''}>MRI</option></select>
       <label style="min-width:0">compare</label><select id="plPoint"><option value="tip">lead tip</option>
       ${l.contacts.map((c) => `<option value="c${c.contact_index}" ${pl.point === `c${c.contact_index}` ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>
@@ -563,13 +578,110 @@ function bindPlan(l, edit) {
   $('#plFromCross').onclick = () => {
     const m = crosshairMM(); if (!m) return;
     let q = m;
-    const a = S.p.acpc_matrix;
-    if ($('#plSpace').value === 'acpc') {
-      if (!a) { toast('Set AC/PC first, or use MRI space.', 'error'); return; }
-      q = [0, 1, 2].map((i) => a[i][0] * m[0] + a[i][1] * m[1] + a[i][2] * m[2] + a[i][3]);
+    const sp = $('#plSpace').value, a = sp === 'acpc' ? S.p.acpc_matrix : sp === 'frame' ? S.p.frame_from_display : null;
+    if (sp !== 'mri') {
+      if (!a) { toast(`Set up ${sp === 'acpc' ? 'AC/PC' : 'the frame'} first, or use MRI space.`, 'error'); return; }
+      q = xf(a, m);
     }
     q.forEach((v, i) => { $(`#plT${i}`).value = v.toFixed(2); });
   };
+}
+function describeAxes(r) {  // rows of a frame rotation (frame axes in RAS) -> e.g. 'X→L, Y→A, Z→I'
+  const n = [['R', 'L'], ['A', 'P'], ['S', 'I']];
+  return ['X', 'Y', 'Z'].map((ax, i) => { const row = r[i].slice(0, 3), k = row.map(Math.abs).indexOf(Math.max(...row.map(Math.abs)));
+    return `${ax}→${row[k] > 0 ? n[k][0] : n[k][1]}`; }).join(', ');
+}
+function frameHTML() {
+  const f = S.p.frame || {}, m = f.model, fits = f.fits || [], ready = !!S.p.scans.ct;
+  const num = (i, k, v) => `<input type="number" step="any" data-pf="${i}.${k}" value="${v}" style="width:52px">`;
+  return `<h2>Stereotactic frame</h2>
+  <p>Finds the N-bar localizer (two or three plates) in the CT; every contact, AC/PC and plan then also get frame coordinates.</p>
+  <div class="card"><div class="row"><b>${esc(m.name)}</b><span class="spacer"></span>
+    <span class="badge ${m.verified ? 'ok' : 'warn'}">${m.verified ? 'geometry verified' : 'geometry not verified'}</span></div>
+    <p class="muted small">${esc(m.axes)}</p>
+    ${m.verified ? '' : `<p class="small" style="color:var(--warn)">${esc(m.note || 'Check the rod geometry against your localizer before relying on frame coordinates.')}</p>`}
+    <div style="overflow-x:auto"><table class="contacts"><tr><th>use</th><th>plate</th><th>axis</th><th>at</th><th>rod 1</th><th>rod 2</th><th>z from</th><th>z to</th><th>diagonal from (h, z)</th><th>to (h, z)</th></tr>
+    ${m.plates.map((p, i) => `<tr><td><input type="checkbox" data-pf="${i}.enabled" ${p.enabled ? 'checked' : ''}></td><td>${esc(p.name)}</td>
+      <td><select data-pf="${i}.axis"><option ${p.axis === 'x' ? 'selected' : ''}>x</option><option ${p.axis === 'y' ? 'selected' : ''}>y</option></select></td>
+      <td>${num(i, 'position', p.position)}</td><td>${num(i, 'rods.0', p.rods[0])}</td><td>${num(i, 'rods.1', p.rods[1])}</td>
+      <td>${num(i, 'z.0', p.z[0])}</td><td>${num(i, 'z.1', p.z[1])}</td>
+      <td>${num(i, 'diagonal.0.0', p.diagonal[0][0])}${num(i, 'diagonal.0.1', p.diagonal[0][1])}</td>
+      <td>${num(i, 'diagonal.1.0', p.diagonal[1][0])}${num(i, 'diagonal.1.1', p.diagonal[1][1])}</td></tr>`).join('')}</table></div>
+    <p class="muted small">Plate "at" = its X (axis x, lateral plates) or Y (axis y, front/back plate); rods at that plate's horizontal
+    position (Y or X); diagonal end points as (horizontal, Z). Expected mounting: <b>${describeAxes(m.mount)}</b> (frame axes in the subject).</p>
+    <label class="row small"><input type="checkbox" id="fmVerified" ${m.verified ? 'checked' : ''}> This geometry was checked against our localizer</label>
+    <div class="row"><button id="fmSave">Save model</button><button id="fmReset" class="ghost">Default</button>
+      <button id="fmExport" class="ghost">Export JSON</button><button id="fmImport" class="ghost">Import JSON…</button></div></div>
+  <div class="card"><b>Detect in the CT</b>
+    <div class="row"><label>threshold</label><input type="number" id="fmThr" value="${f.threshold ?? ''}" placeholder="auto" style="width:90px">
+      <span class="muted small">rods brighter than this</span><span class="spacer"></span>
+      <button class="primary" id="fmDetect" ${ready ? '' : 'disabled'}>Detect frame</button></div>
+    ${fits.length ? `<p class="small">${f.n_rods} rods in ${f.n_rods / 3} N-plates found. Fits (best first):</p>
+      ${fits.map((x, i) => `<label class="row small"><input type="radio" name="fmFit" value="${i}" ${i === (f.chosen || 0) ? 'checked' : ''}>
+        <span><b>${esc(x.axes)}</b> · residual ${fmt(x.rms, 2)} mm · ${Object.entries(x.plates).map(([n, v]) => `${esc(n)} ${fmt(v.rms, 2)} mm`).join(', ')}</span></label>`).join('')}
+      ${fits[f.chosen || 0].rms > 1 ? '<p class="small" style="color:var(--bad)">Poor fit (residual over 1 mm): check the model or the threshold.</p>' : ''}
+      <div class="row"><button id="fmMount" class="ghost" title="Prefer this orientation when fits are equally good (e.g. animals)">Use this orientation as expected mounting</button></div>
+      <p class="muted small">Yellow: detected rods. Cyan: the fitted model. They should overlap.</p>` : '<p class="muted small">Not detected yet.</p>'}
+  </div>
+  <div class="row"><span class="spacer"></span><button class="primary" id="next">Next: leads</button></div>`;
+}
+function readFrameModel() {
+  const m = JSON.parse(JSON.stringify(S.p.frame.model));
+  $$('[data-pf]').forEach((el) => {
+    const [i, ...path] = el.dataset.pf.split('.');
+    let o = m.plates[Number(i)];
+    for (const k of path.slice(0, -1)) o = o[k];
+    const last = path[path.length - 1];
+    o[last] = el.type === 'checkbox' ? el.checked : el.tagName === 'SELECT' ? el.value : Number(el.value);
+  });
+  m.verified = $('#fmVerified').checked;
+  return m;
+}
+function bindFrame() {
+  $('#fmSave').onclick = () => act('/frame-model', { model: readFrameModel() });
+  $('#fmReset').onclick = () => { if (confirm('Replace the model with the default geometry?')) act('/frame-model', { reset: true }); };
+  $('#fmVerified').onchange = () => act('/frame-model', { model: readFrameModel() });
+  $('#fmExport').onclick = () => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(S.p.frame.model, null, 2)], { type: 'application/json' }));
+    a.download = 'localizer.json'; a.click();
+  };
+  $('#fmImport').onclick = () => {
+    const inp = $('#presetInput');
+    inp.onchange = async () => { const f = inp.files[0]; inp.value = ''; if (f) act('/frame-model', { model: JSON.parse(await f.text()) }); };
+    inp.click();
+  };
+  $('#fmDetect').onclick = () => act('/frame-detect', { threshold: $('#fmThr').value === '' ? null : Number($('#fmThr').value) },
+    'Finding the localizer rods and fitting the frame…');
+  $$('[name="fmFit"]').forEach((el) => { el.onchange = () => act('/frame-choose', { index: Number(el.value) }); });
+  if ($('#fmMount')) $('#fmMount').onclick = () => {
+    const m = readFrameModel(), x = S.p.frame.fits[S.p.frame.chosen || 0].matrix;
+    m.mount = [0, 1, 2].map((i) => x[i].slice(0, 3));
+    act('/frame-model', { model: m });
+  };
+  $('#next').onclick = () => goStep('leads');
+}
+function targetsHTML() {
+  const leads = S.p.leads;
+  if (!S.p.coreg || !leads.length) return '<h2>Planned vs delivered</h2><p class="muted">Detect at least one lead first.</p>';
+  if (!leads.some((l) => l.name === S.target)) S.target = leads[0].name;
+  const l = leads.find((x) => x.name === S.target);
+  const rows = leads.filter((x) => x.plan);
+  return `<h2>Planned vs delivered</h2>
+  <p>Enter the planned target (and optionally the planned entry) of each lead in AC/PC, frame or MRI coordinates; the delivered lead
+  tip or a chosen contact is compared with it.</p>
+  <div class="row"><label>lead</label><select id="tgLead">${leads.map((x) => `<option ${x.name === S.target ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></div>
+  ${planHTML(l)}
+  ${rows.length ? `<h3>All plans</h3><table class="contacts"><tr><th>lead</th><th>space</th><th>point</th><th>distance</th><th>dx</th><th>dy</th><th>dz</th><th>depth</th><th>radial</th></tr>
+    ${rows.map((x) => { const r = x.plan_result || {}; return `<tr><td>${esc(x.name)}</td><td>${x.plan.space}</td><td>${x.plan.point}</td>
+      <td>${r.error ? esc(r.error) : fmt(r.distance, 2)}</td><td>${fmt(r.dx, 2)}</td><td>${fmt(r.dy, 2)}</td><td>${fmt(r.dz, 2)}</td><td>${fmt(r.depth, 2)}</td><td>${fmt(r.radial, 2)}</td></tr>`; }).join('')}</table>` : ''}
+  <div class="row"><span class="spacer"></span><button class="primary" id="next">Next: export</button></div>`;
+}
+function bindTargets() {
+  if (!$('#tgLead')) return;
+  $('#tgLead').onchange = (e) => { S.target = e.target.value; render(); };
+  bindPlan(S.p.leads.find((x) => x.name === S.target), (body) => act('/lead-edit', { name: S.target, ...body }));
+  $('#next').onclick = () => goStep('export');
 }
 function acpcHTML() {
   const a = S.p.acpc || {}, ready = S.p.scans.mri;
@@ -577,7 +689,7 @@ function acpcHTML() {
     <button data-setpt="${k}" ${ready ? '' : 'disabled'}>Set at crosshair <kbd>${key}</kbd></button><button data-gopt="${k}" class="ghost" ${a[k] ? '' : 'disabled'}>Go</button></div>`;
   return `<h2>AC/PC</h2>
   <p>Mark the anterior and posterior commissures and one point on the midline (e.g. high on the interhemispheric fissure) on the MRI.
-  Every contact then also gets AC/PC coordinates: <b>+y</b> from PC towards AC, <b>+z</b> towards the midline point (superior; dorsal in
+  Done on the MRI alone, at its full resolution, before coregistration. Every contact then also gets AC/PC coordinates: <b>+y</b> from PC towards AC, <b>+z</b> towards the midline point (superior; dorsal in
   animals), <b>+x</b> to the subject's right.</p>
   <div class="card">${row('ac', 'AC', 'A')}${row('pc', 'PC', 'P')}${row('msp', 'midline', 'M')}
     <div class="row"><label>origin</label><select id="acOrigin">${[['mcp', 'mid-commissural point'], ['ac', 'AC'], ['pc', 'PC']].map(([v, t]) => `<option value="${v}" ${(a.origin || 'mcp') === v ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
@@ -585,14 +697,14 @@ function acpcHTML() {
     <div class="row"><span class="badge ${S.p.acpc_matrix ? 'ok' : 'warn'}">${S.p.acpc_matrix ? 'AC/PC coordinates active' : 'incomplete'}</span><span class="spacer"></span>
       <button id="acClear" class="ghost" ${S.p.acpc ? '' : 'disabled'}>Clear</button></div></div>
   <p class="muted small">Markers: AC red, PC blue, midline green. Zoom in (+) for precise placement.</p>
-  <div class="row"><span class="spacer"></span><button class="primary" id="next">Next: leads</button></div>`;
+  <div class="row"><span class="spacer"></span><button class="primary" id="next">Next: coregister</button></div>`;
 }
 function bindAcpc() {
   $$('[data-setpt]').forEach((b) => { b.onclick = () => setAcpcPoint(b.dataset.setpt); });
   $$('[data-gopt]').forEach((b) => { b.onclick = () => goTo(S.p.acpc[b.dataset.gopt]); });
   $('#acOrigin').onchange = (e) => act('/acpc', { origin: e.target.value });
   $('#acClear').onclick = () => act('/acpc', { clear: true });
-  $('#next').onclick = () => goStep('leads');
+  $('#next').onclick = () => goStep('coreg');
 }
 function setAcpcPoint(k) {
   const m = crosshairMM();
@@ -627,7 +739,6 @@ function bindLeads() {
   $$('tr[data-ci]').forEach((tr) => { tr.onclick = () => selectContact(Number(tr.dataset.ci)); });
   $$('[data-mv]').forEach((b) => { b.onclick = () => moveContact(S.contact, l.contacts[S.contact].s + Number(b.dataset.mv)); });
   if ($('#anchor')) $('#anchor').onclick = () => edit({ action: 'refit', index: S.contact, s: l.contacts[S.contact].s }, 'Fitting…');
-  bindPlan(l, edit);
 }
 function setPoint(which) {
   const m = crosshairMM();
@@ -763,7 +874,8 @@ function exportHTML() {
   <div class="card">
     ${opt('tsv', 'Contacts table (<span class="mono">electrodes.tsv</span>, BIDS columns) + coordinate system; with plans also <span class="mono">plan_vs_delivered.tsv</span>')}
     <div class="row" style="margin-left:22px"><label>x, y, z in</label><select id="expSpace"><option value="mri" ${o.space === 'mri' ? 'selected' : ''}>MRI space</option>
-      <option value="acpc" ${o.space === 'acpc' ? 'selected' : ''} ${S.p.acpc_matrix ? '' : 'disabled'}>AC/PC coordinates</option></select>
+      <option value="acpc" ${o.space === 'acpc' ? 'selected' : ''} ${S.p.acpc_matrix ? '' : 'disabled'}>AC/PC coordinates</option>
+      <option value="frame" ${o.space === 'frame' ? 'selected' : ''} ${S.p.frame_from_display ? '' : 'disabled'}>frame coordinates</option></select>
       <span class="muted small">(AC/PC columns are always added when defined)</span></div>
     ${opt('leads_file', 'Results file (<span class="mono">.brainscope.json</span>, can be loaded again)')}
     ${opt('transforms', 'Transforms (4×4 text, ITK .tfm)')}
@@ -895,7 +1007,11 @@ function drawPreset(p) {
 // ---------- navigation and keys ----------
 async function goStep(step) {
   S.step = step;
-  if (step === 'leads') { S.ctWindow = 'metal'; S.base = 'ct'; }
+  if (step === 'leads') {  // base image: the finer scan (a coarse base would pixelate the other one)
+    const vol = (r) => (S.p?.scans[r] ? S.p.scans[r].spacing.reduce((x, y) => x * y, 1) : Infinity);
+    S.ctWindow = 'metal'; S.base = vol('mri') <= 2 * vol('ct') ? 'mri' : 'ct';
+  }
+  if (step === 'frame') { S.ctWindow = 'bone'; S.base = 'ct'; }
   if (step === 'acpc') S.base = 'mri';
   if (step === 'coreg') { S.ctWindow = 'bone'; S.base = 'mri'; }
   $('#ctWindow').value = S.ctWindow;

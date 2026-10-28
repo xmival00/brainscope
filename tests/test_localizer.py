@@ -51,3 +51,21 @@ def test_frame_is_found_and_fitted(case):
 def test_too_few_plates_is_reported():
     with pytest.raises(ValueError, match="at least 2"):
         loc.fit([], [], loc.default_model())
+
+
+def test_frame_in_a_project(tmp_path):
+    from brainscope import volume
+    from brainscope.project import Project
+
+    truth = LEKSELL_FROM_RAS @ rigid((2, -1, 3), (3, -4, 2))
+    data, aff = _scene(truth, loc.default_model(), spacing=1.0)
+    volume.save(tmp_path / "ct.nii.gz", data.astype(np.int16), aff)
+    p = Project.create(tmp_path / "p")
+    p.import_scan("ct", tmp_path / "ct.nii.gz")
+    p.detect_frame(threshold=500)
+    assert register.mean_displacement(p.frame_matrix(), truth, (0, 0, 0), 60) < 0.5
+    assert volume.load(p.frame_file()).data.max() == 2           # detected rods and fitted model shown
+    model = p.frame_model()
+    model["mount"] = (np.array(model["mount"]) @ np.diag([-1, -1, 1])).tolist()  # only the expected mounting changes
+    p.set_frame_model(model)
+    assert p.frame_matrix() is not None                          # ... so the fit is kept

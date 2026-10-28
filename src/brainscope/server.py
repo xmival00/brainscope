@@ -178,7 +178,7 @@ def get_project(h, name, q):
     return _summary(h, h.app.project(name))
 
 
-@route("POST", r"/api/p/([^/]+)/(undo|redo|species|orient|roi|acpc|coreg|nudge|coreg-accept|coreg-reset|lead|lead-edit)")
+@route("POST", r"/api/p/([^/]+)/(undo|redo|species|orient|roi|acpc|frame-model|frame-detect|frame-choose|coreg|nudge|coreg-accept|coreg-reset|lead|lead-edit)")
 def mutate(h, name, action, q):
     p = h.app.project(name)
     b = h.body_json()
@@ -197,6 +197,12 @@ def mutate(h, name, action, q):
                          from_current=bool(b.get("from_current")))
         elif action == "nudge":
             p.nudge(b.get("rot", (0, 0, 0)), b.get("trans", (0, 0, 0)))
+        elif action == "frame-model":
+            p.set_frame_model(b.get("model"), reset=bool(b.get("reset")))
+        elif action == "frame-detect":
+            p.detect_frame(b.get("threshold"))
+        elif action == "frame-choose":
+            p.choose_frame(b["index"])
         elif action == "acpc":
             p.set_acpc(b.get("point"), b.get("xyz"), b.get("origin"), clear=bool(b.get("clear")))
         elif action == "roi":
@@ -286,7 +292,15 @@ def dicom_use(h, name, q):
 def vol(h, name, role, q):
     p = h.app.project(name)
     with p.lock:
-        f = p.display_file(role)
+        f = p.display_file(role, crop=q.get("full") != "1")
+    return h.file(f)
+
+
+@route("GET", r"/api/p/([^/]+)/vol/frame\.nii\.gz")
+def vol_frame(h, name, q):
+    p = h.app.project(name)
+    with p.lock:
+        f = p.frame_file()
     return h.file(f)
 
 
@@ -351,7 +365,7 @@ def export(h, name, q):
     p = h.app.project(name)
     b = h.body_json()
     opts = {k: bool(b[k]) for k in ("tsv", "leads_file", "transforms", "mri", "ct", "labels") if k in b}
-    if b.get("space") in ("mri", "acpc"):
+    if b.get("space") in ("mri", "acpc", "frame"):
         opts["space"] = b["space"]
     with p.lock:
         files = p.export(**opts)
