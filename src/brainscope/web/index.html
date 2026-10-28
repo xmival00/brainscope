@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>brainscope</title>
+<link rel="stylesheet" href="/web/style.css">
+<script src="/web/vendor/niivue.umd.js"></script>
+</head>
+<body>
+<header id="top">
+  <div class="brand">brainscope <span class="ruo">Research use only</span></div>
+  <div class="proj">
+    <select id="projectSelect" title="Project"></select>
+    <button id="newProject">New project</button>
+    <button id="demoProject" class="ghost" title="Create a project from a synthetic test case">Demo case</button>
+  </div>
+  <div class="spacer"></div>
+  <span id="projectFolder" class="muted small"></span>
+  <button id="undo" class="ghost" title="Undo (Ctrl+Z)">Undo</button>
+  <button id="redo" class="ghost" title="Redo (Ctrl+Y)">Redo</button>
+</header>
+<main>
+  <nav id="steps">
+    <button data-step="import"><b>1</b><span>Import</span><i></i></button>
+    <button data-step="orient"><b>2</b><span>Orient</span><i></i></button>
+    <button data-step="coreg"><b>3</b><span>Coregister</span><i></i></button>
+    <button data-step="leads"><b>4</b><span>Leads</span><i></i></button>
+    <button data-step="export"><b>5</b><span>Export</span><i></i></button>
+  </nav>
+  <section id="center">
+    <div id="viewerBar">
+      <div class="seg" id="layout">
+        <button data-layout="multi" class="on">Multi</button><button data-layout="axial">Axial</button>
+        <button data-layout="coronal">Coronal</button><button data-layout="sagittal">Sagittal</button>
+        <button data-layout="render">3D</button>
+      </div>
+      <span class="ctl" id="ctCtl">base
+        <span class="seg" id="base"><button data-base="mri" class="on">MRI</button><button data-base="ct">CT</button></span>
+        CT window <select id="ctWindow"><option value="bone">bone</option><option value="metal">metal</option></select>
+        overlay <input type="range" id="ctOpacity" min="0" max="1" step="0.05" value="0.5" title="Overlay opacity (O toggles)">
+      </span>
+      <div class="spacer"></div>
+      <span id="coords" class="mono"></span>
+    </div>
+    <div id="viewerWrap"><canvas id="gl"></canvas><div id="empty">Create or open a project to start.</div></div>
+    <div id="inspector" hidden>
+      <div class="insHead"><b id="insTitle"></b><span class="muted small">Drag a contact to move it. Hover to see the
+        plane perpendicular to the lead. Top: lengthwise views; bottom: intensity along the lead (grey) and
+        the fitted contact model.</span></div>
+      <div class="insBody"><canvas id="strip"></canvas><canvas id="xsec" width="160" height="160"></canvas></div>
+    </div>
+  </section>
+  <aside id="panel"></aside>
+</main>
+<div id="busy" hidden><div class="spinner"></div><div id="busyText"></div></div>
+<div id="toast"></div>
+<dialog id="presetDlg"></dialog>
+<input type="file" id="niftiInput" accept=".nii,.gz" hidden>
+<input type="file" id="dicomInput" webkitdirectory multiple hidden>
+<input type="file" id="leadsInput" accept=".json" hidden>
+<input type="file" id="presetInput" accept=".json" hidden>
+<script src="/web/app.js"></script>
+</body>
+</html>

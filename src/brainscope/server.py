@@ -57,17 +57,24 @@ class Handler(BaseHTTPRequestHandler):
     def _dispatch(self, method):
         url = urlparse(self.path)
         q = {k: v[0] for k, v in parse_qs(url.query).items()}
-        for m, rx, fn in ROUTES:
-            hit = rx.match(url.path)
-            if m == method and hit:
-                try:
-                    return fn(self, *hit.groups(), q=q)
-                except (ValueError, KeyError, RuntimeError, FileNotFoundError) as e:
-                    return self.json({"error": str(e).strip("'\"")}, 400)
-                except Exception as e:  # noqa: BLE001
-                    traceback.print_exc(file=sys.stderr)
-                    return self.json({"error": f"internal error: {type(e).__name__}: {e}"}, 500)
-        self.json({"error": "not found"}, 404)
+        self._left = int(self.headers.get("Content-Length", 0) or 0)
+        try:
+            for m, rx, fn in ROUTES:
+                hit = rx.match(url.path)
+                if m == method and hit:
+                    try:
+                        return fn(self, *hit.groups(), q=q)
+                    except (ValueError, KeyError, RuntimeError, FileNotFoundError) as e:
+                        return self.json({"error": str(e).strip("'\"")}, 400)
+                    except Exception as e:  # noqa: BLE001
+                        traceback.print_exc(file=sys.stderr)
+                        return self.json({"error": f"internal error: {type(e).__name__}: {e}"}, 500)
+            self.json({"error": "not found"}, 404)
+        finally:  # an unread body would be parsed as the next request on this kept-alive connection
+            if self._left > CHUNK:
+                self.close_connection = True
+            elif self._left > 0:
+                self.rfile.read(self._left)
 
     def do_GET(self):
         self._dispatch("GET")
@@ -77,17 +84,16 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- helpers ----
     def body_bytes_to(self, f):
-        n = int(self.headers.get("Content-Length", 0))
-        while n > 0:
-            chunk = self.rfile.read(min(CHUNK, n))
+        while self._left > 0:
+            chunk = self.rfile.read(min(CHUNK, self._left))
             if not chunk:
                 raise ValueError("upload interrupted")
             f.write(chunk)
-            n -= len(chunk)
+            self._left -= len(chunk)
 
     def body_json(self):
-        n = int(self.headers.get("Content-Length", 0))
-        return json.loads(self.rfile.read(n) or b"{}")
+        raw, self._left = self.rfile.read(self._left), 0
+        return json.loads(raw or b"{}")
 
     def json(self, obj, code=200):
         raw = json.dumps(obj, default=jsonable).encode()
@@ -147,6 +153,23 @@ def state(h, q):
 def new_project(h, q):
     name = check_name(h.body_json().get("name", ""), "project name")
     Project.create(h.app.root / name)
+    return _summary(h, h.app.project(name))
+
+
+@route("POST", r"/api/demo")
+def demo_project(h, q):
+    from . import demo
+
+    data = h.app.root / ".demo-data"
+    if not (data / "truth.json").exists():
+        demo.make(data)
+    names = set(list_projects(h.app.root))
+    name = next(n for n in ["Demo"] + [f"Demo {i}" for i in range(2, 1000)] if n not in names)
+    p = Project.create(h.app.root / name)
+    p.set_species("pig")
+    p.import_scan("mri", data / "mri.nii.gz")
+    p.import_scan("ct", data / "ct.nii.gz")
+    p.undo_stack.clear()
     return _summary(h, h.app.project(name))
 
 
