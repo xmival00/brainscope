@@ -13,7 +13,7 @@ const S = {
   state: null, p: null, step: 'import', presets: [], orientRole: 'mri', layout: 'multi',
   ctWindow: 'bone', ctOpacity: 0.5, ctVisible: true, base: 'mri', win: { mri: null, ct: null }, winRole: 'ct', align: { ct: null, mri: null }, lead: null, contact: null, view: null,
   draft: { name: '', preset: '', hemisphere: 'n/a', curved: false, tip: null, entry: null },
-  loaded: { base: null, contacts: null, meshes: null }, nudgeMm: 1, nudgeDeg: 1,
+  loaded: { meshes: null }, nudgeMm: 1, nudgeDeg: 1,
   exportOpts: { tsv: true, leads_file: true, transforms: true, mri: false, ct: false, labels: false, space: 'mri' },
   lastExport: null, replaceOnImport: false, showLeads: true, brainParams: null, brainExport: null,
 };
@@ -79,7 +79,7 @@ function updateCoords() {
 }
 function goTo(mm) {
   if (!nv.volumes.length) return;
-  nv.scene.crosshairPos = nv.mm2frac(mm);
+  nv.scene.crosshairPos = nv.mm2frac(mm, 0, true);  // world mm, as crosshairMM() reads them (differs for oblique scans)
   nv.drawScene(); nv.createOnLocationChange?.(); updateCoords();
 }
 function setLayout(l) {
@@ -127,10 +127,13 @@ function wantedVolumes() {
   return out;
 }
 function volSpec(v) {
-  const k = scanKey(v.role), full = v.role === 'ct' && S.step === 'frame';  // the frame step needs the uncropped CT
+  const full = v.role === 'ct' && S.step === 'frame';  // the frame step needs the uncropped CT
+  const k = S.p.display?.[v.role]?.[full ? 'full' : 'view'] || scanKey(v.role);  // = the file's content: unchanged files are reused
   return { url: `${P(`/vol/${v.role}.nii`)}?v=${k}${full ? '&full=1' : ''}`, name: `${v.role}-${full ? 'full-' : ''}${k}.nii`, colormap: v.colormap,
-    opacity: v.opacity ?? 1, ...(v.cal_min !== undefined ? { cal_min: v.cal_min, cal_max: v.cal_max } : {}) };
+    opacity: v.opacity ?? 1, ...(v.cal_min !== undefined ? { cal_min: v.cal_min, cal_max: v.cal_max } : {}),
+    xform: v.role === 'ct' && S.p.coreg ? S.p.coreg.ct_to_mri : null };  // CT -> MRI, applied in the viewer
 }
+const mat4mul = (a, b) => a.map((r) => [0, 1, 2, 3].map((j) => r.reduce((t, x, k) => t + x * b[k][j], 0)));
 function contactsKey() {
   const rows = S.p.leads.flatMap((l) => l.contacts.map((c) => [c.x, c.y, c.z]));
   return rows.length && S.p.scans.mri && S.p.coreg && S.step !== 'orient' && S.step !== 'import' ? hkey([rows, scanKey('mri')]) : null;
@@ -173,39 +176,59 @@ function extraLayers() {  // label overlays on the MRI grid: contacts (leads, ex
   }
   return out;
 }
-async function refreshViewer() {
+const VOLS = new Map();  // url -> loaded image (scans and overlays stay in memory: switching steps does not reload them)
+const VOLS_KEEP = 10;
+async function loadImage(s) {  // from the memory cache, or fetched once (several at a time)
+  let img = VOLS.get(s.url);
+  if (img) { VOLS.delete(s.url); VOLS.set(s.url, img); return img; }  // most recently used last
+  img = await niivue.NVImage.loadFromUrl({ url: s.url, name: s.name, opacity: s.opacity ?? 1, ...(s.cm ? {} : { colormap: s.colormap ?? 'gray' }) });
+  img._url = s.url; img._fresh = true;
+  if (s.cm) img.setColormapLabel(s.cm);
+  VOLS.set(s.url, img);
+  return img;
+}
+async function syncLayers(specs) {  // show exactly `specs` (in order) plus the band preview; Niivue redraws once
+  const imgs = await Promise.all(specs.map(loadImage));
+  const band = bandLayer(imgs[0]);
+  const list = band ? [...imgs, band] : imgs;
+  if (list.length !== nv.volumes.length || list.some((v, i) => v !== nv.volumes[i])) {
+    const keep = nv.volumes.length && imgs.length && nv.volumes[0] !== imgs[0] ? crosshairMM() : null;  // a new base: stay put
+    nv.volumes = list; nv.back = list[0] || null; nv.overlays = list.slice(1);
+    if (keep) nv.scene.crosshairPos = nv.mm2frac(keep, 0, true);
+    for (const u of [...VOLS.keys()]) if (VOLS.size > VOLS_KEEP && !specs.some((s) => s.url === u)) VOLS.delete(u);
+  }
+  specs.forEach((s, i) => {  // display settings change without reloading anything
+    const v = imgs[i];
+    v.opacity = s.opacity ?? 1;
+    if (s.cm) return;
+    if ('xform' in s) {  // the CT file stays in its own world; the coregistration moves it here (no reload on a nudge)
+      const xk = JSON.stringify(s.xform);
+      if (v._xk !== xk) { v._fileAffine ??= v.getAffine(); v.setAffine(s.xform ? mat4mul(s.xform, v._fileAffine) : v._fileAffine); v._xk = xk; }
+    }
+    if (s.colormap && v.colormap !== s.colormap) v.colormap = s.colormap;
+    if (s.cal_min !== undefined) { v.cal_min = s.cal_min; v.cal_max = s.cal_max; }
+    else if (!v._fresh && v.robust_min !== undefined) { v.cal_min = v.robust_min; v.cal_max = v.robust_max; }
+    v._fresh = false;
+  });
+  if (band) setBandRange(band, imgs[0]);
+  if (nv.volumes.length) nv.updateGLVolume(); else nv.drawScene();
+}
+let refreshing = null, refreshAgain = false;
+async function refreshViewer() {  // one refresh at a time; calls during a refresh are folded into one more
+  if (refreshing) { refreshAgain = true; return refreshing; }
+  refreshing = (async () => { do { refreshAgain = false; await refreshViewerOnce(); } while (refreshAgain); })();
+  try { await refreshing; } finally { refreshing = null; }
+}
+async function refreshViewerOnce() {
   await nvReady;
   $('#empty').hidden = !!(S.p && (S.p.scans.mri || S.p.scans.ct));
   $('#empty').textContent = S.p ? 'Import an MRI and a CT to start.' : 'Create or open a project to start.';
   const vols = wantedVolumes();
   vols.forEach((v) => { if (S.win[v.role]) [v.cal_min, v.cal_max] = S.win[v.role]; });  // the user's own window
-  const base = hkey([S.p?.name, S.step === 'frame', vols.map((v) => [v.role, scanKey(v.role), v.colormap])]);
+  const extras = vols.length ? extraLayers() : [];  // no overlays without a scan (3D surfaces)
   try {
-    if (base !== S.loaded.base) {
-      S.loaded = { base, contacts: null };
-      await nv.loadVolumes(vols.map(volSpec));
-    } else {
-      vols.forEach((v, i) => {
-        const vol = nv.volumes[i];
-        if (!vol) return;
-        if (v.cal_min !== undefined) { vol.cal_min = v.cal_min; vol.cal_max = v.cal_max; }
-        else if (vol.robust_min !== undefined) { vol.cal_min = vol.robust_min; vol.cal_max = vol.robust_max; }
-        vol.opacity = v.opacity ?? 1;
-      });
-      if (nv.volumes.length) nv.updateGLVolume();
-    }
-    const extras = vols.length ? extraLayers() : [], ek = extras.map((x) => x.key).join('|');  // no overlays without a scan (3D surfaces)
-    if (ek !== S.loaded.contacts) {
-      while (nv.volumes.length > vols.length) nv.removeVolume(nv.volumes[nv.volumes.length - 1]);
-      for (const x of extras) {
-        await nv.addVolumeFromUrl({ url: x.url, name: x.name, opacity: x.opacity ?? 1 });
-        nv.volumes[nv.volumes.length - 1].setColormapLabel(x.cm);
-      }
-      if (extras.length) nv.updateGLVolume();
-      S.loaded.contacts = ek;
-    }
+    await syncLayers([...vols.map(volSpec), ...extras.map((x) => ({ url: x.url, name: x.name, opacity: x.opacity ?? 1, cm: x.cm }))]);
   } catch (e) { toast(`Viewer: ${e.message}`, 'error'); }
-  syncBand();
   await syncMeshes();
   $('#ctCtl').style.visibility = vols.length > 1 ? 'visible' : 'hidden';
   syncWindow(vols);
@@ -230,25 +253,27 @@ async function syncMeshes() {  // brain surface and lead meshes, shown in the br
 }
 const BAND_CM = { R: [255, 255, 255, 255, 255, 255], G: [50, 50, 50, 50, 50, 50], B: [50, 50, 50, 50, 50, 50],
   A: [0, 0, 255, 255, 0, 0], I: [0, 84, 85, 170, 171, 255] };  // only the middle third is drawn
-function syncBand() {  // frame step: voxels inside the intensity band in red, on a copy of the scan (no server round trip)
-  const old = nv.volumes.find((v) => v._band), base = nv.volumes[0];
-  const s = S.step === 'frame' && S.fmShowBand !== false && base && !base._band ? S.p?.frame?.scans?.[frameScan()] : null;
-  const b = s ? S.fmBand || s.band : null;
-  if (!b) { if (old) nv.removeVolume(old); return; }
-  let v = old;
-  if (!v) {
-    if (!S.bandCm) { nv.addColormap('brainscope-band', BAND_CM); S.bandCm = true; }
-    v = base.clone(); v._band = true;
-    nv.addVolume(v);
-    nv.setColormap(v.id, 'brainscope-band');
-  }
+function bandLayer(base) {  // frame step: copy of the scan drawn only inside the intensity band (red), or null
+  const s = S.step === 'frame' && S.fmShowBand !== false && base ? S.p?.frame?.scans?.[frameScan()] : null;
+  if (!s || !(S.fmBand || s.band)) return null;
+  if (!S.bandCm) { nv.addColormap('brainscope-band', BAND_CM); S.bandCm = true; }
+  if (S.bandImg?._src !== base) { const v = base.clone(); v._band = true; v._src = base; v.colormap = 'brainscope-band'; S.bandImg = v; }
+  return S.bandImg;
+}
+function setBandRange(v, base) {
+  const s = S.p.frame.scans[frameScan()], b = S.fmBand || s.band;
   const lo = b[0], hi = b[1] ?? base.global_max, w = Math.max(hi - lo, 1e-3);
+  v.cal_min = lo - w; v.cal_max = hi + w;  // the band is the middle third of the colour map
+  v.opacity = 0.75;
   [['#fmLo', lo], ['#fmHi', hi]].forEach(([id, x]) => {  // slider range = the scan's range (known once it is loaded)
     const el = $(id);
     if (el && document.activeElement !== el) { el.min = Math.floor(base.global_min); el.max = Math.ceil(base.global_max); el.value = x; }
   });
-  v.cal_min = lo - w; v.cal_max = hi + w;  // the band is the middle third of the colour map
-  v.opacity = 0.75;
+}
+function syncBand() {  // while dragging the band sliders: only the range changes
+  const v = nv.volumes.find((x) => x._band);
+  if (!v || !(S.step === 'frame' && S.fmShowBand !== false)) { refreshViewer(); return; }
+  setBandRange(v, nv.volumes[0]);
   nv.updateGLVolume();
 }
 function syncSliders() {  // slice position sliders follow the crosshair
@@ -285,7 +310,7 @@ async function setProject(p) {
   const changed = S.p?.name !== p.name;
   S.p = p;
   if (!changed && !visibleSteps().some(([k]) => k === S.step)) S.step = 'coreg';  // its module was just hidden
-  if (changed) { S.lead = null; S.contact = null; S.view = null; S.loaded = { base: null, contacts: null }; S.win = { mri: null, ct: null }; S.align = { ct: null, mri: null }; S.brainParams = null; S.brainExport = null; S.fmScan = null; S.fmBand = null; S.step = firstOpenStep(); }
+  if (changed) { S.lead = null; S.contact = null; S.view = null; S.loaded = { meshes: null }; S.win = { mri: null, ct: null }; S.align = { ct: null, mri: null }; S.brainParams = null; S.brainExport = null; S.fmScan = null; S.fmBand = null; S.step = firstOpenStep(); }
   if (S.lead && !p.leads.some((l) => l.name === S.lead)) { S.lead = null; S.view = null; }
   $('#projectSelect').value = p.name;
   $('#projectFolder').textContent = p.folder; $('#projectFolder').title = p.folder;
@@ -338,7 +363,8 @@ function renderNav() {
     `<button data-step="${k}" class="${k === S.step ? 'on' : ''}" ${S.p ? '' : 'disabled'}><b>${++n}</b><span>${t}</span><i class="${stepStatus(k)}"></i></button>`).join('')}`).join('')
     + (S.p ? `<div class="navsec">Modules</div><div class="navmods">${SECTIONS.slice(1).map((s) =>
       `<label class="row small"><input type="checkbox" data-mod="${s.key}" ${modOn(s.key) ? 'checked' : ''}> ${s.name}</label>`).join('')}</div>` : '');
-    $$('[data-mod]').forEach((el) => { el.onchange = () => act('/modules', { modules: $$('[data-mod]').filter((x) => x.checked).map((x) => x.dataset.mod) }); });
+  $$('#steps button').forEach((b) => { b.onclick = () => goStep(b.dataset.step); });
+  $$('[data-mod]').forEach((el) => { el.onchange = () => act('/modules', { modules: $$('[data-mod]').filter((x) => x.checked).map((x) => x.dataset.mod) }); });
 }
 function render() {
   renderNav();
@@ -729,7 +755,7 @@ function frameHTML() {
       <label class="row"><input type="checkbox" id="fmShow" ${S.fmShowBand !== false ? 'checked' : ''}> show band in red</label></div></div>
   <div class="card"><b>2 · Place the localizer</b>
     <p class="muted small">Cyan: where the localizer model is now. Find it automatically, or put it on the rods by hand (roughly, within a few mm).</p>
-    <div class="row"><button id="fmAuto" class="primary">Auto-find</button><button id="fmPlace" title="Move the model's centre to the crosshair">Centre at crosshair</button>
+    <div class="row"><button id="fmAuto" class="primary">Auto-find</button><button id="fmPlace" title="Put the crosshair in the middle of the localizer (midway between the side plates), then press this">Centre at crosshair</button>
       <button id="fmPoseReset" class="ghost" title="Expected mounting, centred on the scan">Reset</button></div>
     <div class="row"><label>turn 90°</label>${[['x', 'L–R'], ['y', 'A–P'], ['z', 'S–I']].map(([k, n]) => `<button data-fturn="${k}" title="Turn the model 90° about the ${n} axis (Shift: the other way)">${n}</button>`).join('')}</div>
     <div class="row"><label>step</label><select id="fmMm">${[0.5, 1, 2, 5, 10].map((x) => `<option ${x === (S.fmMm ?? 2) ? 'selected' : ''}>${x}</option>`).join('')}</select> mm
@@ -1276,7 +1302,6 @@ document.addEventListener('keydown', (e) => {
   if (k === '-') zoom(1 / 1.4);
   if (k === '0') zoom(0);
 });
-$$('#steps button').forEach((b) => { b.onclick = () => goStep(b.dataset.step); });
 $$('#layout button').forEach((b) => { b.onclick = () => setLayout(b.dataset.layout); });
 $('#ctWindow').onchange = (e) => { S.ctWindow = e.target.value; S.win.ct = null; refreshViewer(); };
 $('#winRole').onchange = (e) => { S.winRole = e.target.value; refreshViewer(); };

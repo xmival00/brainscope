@@ -30,8 +30,11 @@ def _run_workflow(root, case):
         p.orient("ct", op)
     p.orient("ct", left_confirmed=True, left_note="CT marker")
     p.set_roi(center=(0, 0, 5), size=(110, 140, 110))  # the brain only
-    lab = volume.load(p.roi_file()).data
+    roi = volume.load(p.roi_file())
+    lab = roi.data
     assert lab.any() and not lab[tuple(np.array(lab.shape) // 2)]  # an outline, empty inside
+    w = apply(roi.affine, np.argwhere(lab > 0))                     # ... on the box faces (world mm)
+    assert np.allclose(w.min(0), np.subtract((0, 0, 5), (55, 70, 55)), atol=1) and np.allclose(w.max(0), np.add((0, 0, 5), (55, 70, 55)), atol=1)
     p.coregister()
     rng = np.random.default_rng(3)
     for L in truth["leads"]:

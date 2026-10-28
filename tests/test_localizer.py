@@ -140,7 +140,7 @@ def test_frame_per_scan_in_a_project(tmp_path):
     p.import_scan("ct", tmp_path / "ct.nii.gz")
     p.import_scan("mri", tmp_path / "mri.nii.gz")
     p.subject["coreg"] = {"ct_to_mri": np.eye(4).tolist()}       # same grid: identity coregistration
-    centre = apply(np.linalg.inv(truth), np.mean([q for r in loc.rod_list(model) for q in (r["p0"], r["p1"])], 0))
+    centre = apply(np.linalg.inv(truth), loc.centre(model))      # where the user sees the localizer's middle
     for role, band in (("ct", (-60, 60)), ("mri", (250, None))):
         p.set_frame_band(role, band)
         p.frame_pose(role, "reset")
@@ -164,5 +164,8 @@ def test_frame_per_scan_in_a_project(tmp_path):
     assert s["pose"] == pose and not s["fitted"] and p.frame_matrix() is None   # placement kept, fit to redo
     p.frame_refine("mri")
     rods = p.subject["frame"]["scans"]["mri"]["summary"]["rods"]
+    p.frame_pose("mri", "reset")                                   # from a rough placement with these two plates too
+    p.frame_pose("mri", "place", point=centre + (1.5, -1.0, 1.0))
+    p.frame_refine("mri")
     assert {k.rsplit("-", 1)[0] for k in rods} == {"right", "left"}
     assert register.mean_displacement(p.frame_from_mri(), truth, (0, 0, 0), 60) < 0.3

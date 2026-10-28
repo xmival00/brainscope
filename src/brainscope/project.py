@@ -35,7 +35,7 @@ LEADS_FORMAT = "brainscope-leads"
 ROLES = ("mri", "ct")
 SPECIES = ("human", "pig", "other")
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,63}")
-DISPLAY_MAX_VOXELS = {"mri": 100e6, "ct": 40e6}  # larger volumes fail to load in the viewer (seen: 300M voxels)
+DISPLAY_MAX_VOXELS = {"mri": 100e6, "ct": 100e6}  # larger volumes fail to load in the viewer (seen: 300M voxels)
 DISPLAY_MARGIN_MM = 20.0
 LEAD_COLORS = ["#ff5d5d", "#3fa7ff", "#3ecf8e", "#f0b429", "#c77dff", "#ff8fab", "#5ce1e6", "#ffd166", "#a3e635", "#fb923c"]
 TSV_COLUMNS = ["name", "x", "y", "z", "size", "group", "type", "material", "manufacturer", "hemisphere",
@@ -267,28 +267,22 @@ class Project:
         self.save()
 
     def roi_file(self):
-        """The box as a thin outline on the MRI grid, for the viewer."""
+        """The box as a thin outline on its own 1 mm grid (world axes, like the box), small enough to load at once."""
         roi = self.subject.get("roi")
         if not roi:
             raise ValueError("no region of interest set")
-        aff, shape = self.corrected_affine("mri"), np.array(self.scan("mri")["shape"])
-        key = hashlib.sha1(json.dumps(roi).encode() + aff.tobytes()).hexdigest()[:12]
+        key = hashlib.sha1(json.dumps(roi).encode()).hexdigest()[:12]
         f = self.root / "cache" / f"roi-{key}.nii.gz"
         if not f.exists():
             for old in (self.root / "cache").glob("roi-*.nii.gz"):
                 old.unlink()
-            h = np.array(roi["size"]) / 2
-            c = np.array(roi["center"])
-            corners = [c + h * np.array([sx, sy, sz]) for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)]
-            vox = apply(np.linalg.inv(aff), corners)
-            lo = np.clip(np.round(vox.min(0)).astype(int), 0, shape - 1)
-            hi = np.clip(np.round(vox.max(0)).astype(int), 0, shape - 1)
-            lab = np.zeros(tuple(shape), np.uint8)
-            box = tuple(slice(a, b + 1) for a, b in zip(lo, hi))
-            lab[box] = 1
-            t = np.maximum(1, np.round(1.0 / np.sqrt((aff[:3, :3] ** 2).sum(0))).astype(int))  # ~1 mm thick
-            inner = tuple(slice(a + w, b + 1 - w) for a, b, w in zip(lo, hi, t))
-            lab[inner] = 0
+            h, c = np.array(roi["size"]) / 2, np.array(roi["center"])
+            n = np.round(2 * h).astype(int) + 3  # 1 mm voxels: one empty voxel, then the outline at the box faces
+            lab = np.zeros(tuple(n), np.uint8)
+            lab[1:-1, 1:-1, 1:-1] = 1
+            lab[2:-2, 2:-2, 2:-2] = 0
+            aff = np.eye(4)
+            aff[:3, 3] = c - (n - 1) / 2
             volume.save(f, lab, aff)
         return f
 
@@ -477,7 +471,7 @@ class Project:
             for old in (self.root / "cache").glob("acpc-*.nii.gz"):
                 old.unlink()
             pts = [(a[k], v) for v, k in enumerate(acpc.POINTS, start=1) if k in a]
-            volume.save(f, _balls(tuple(self.scan("mri")["shape"]), aff, pts, 1.5), aff)
+            _save_cropped(f, _balls(tuple(self.scan("mri")["shape"]), aff, pts, 1.5), aff)
         return f
 
     # ---- stereotactic frame (N-bar localizer), per scan (PLAN D33-D36) ----
@@ -561,8 +555,7 @@ class Project:
         s = self.frame_state(role)
         model = self.frame_model()
         disp = self.display_from_raw(role)
-        rods = loc.rod_list(model)
-        cf = np.mean([q for r in rods for q in (r["p0"], r["p1"])], 0)
+        cf = loc.centre(model)  # fixed point of the localizer, whichever plates are used
         if op == "auto":
             fits = (s.get("auto") or {}).get("fits") or []
             if not 0 <= int(index) < len(fits):
@@ -848,36 +841,35 @@ class Project:
         return detect.cross_section(ct.data, ct.affine, self.leads[self.lead_index(name)], s)
 
     # ---- files for the viewer ----
-    def display_file(self, role, crop=True):
-        """What the viewer loads: the scan with its corrected header (CT: also coregistered). A large CT is cropped
-        to the MRI's field of view once coregistered, and anything still too large is averaged down; this is for
-        display only (detection and registration always use the full scan)."""
+    def _display_plan(self, role, crop=True):
+        """(key, lo, hi, header affine) of the viewer copy of a scan. The CT copy keeps the CT's own corrected world:
+        the viewer applies the coregistration itself, so a nudge needs no new file. Once coregistered, a CT is
+        cropped to the MRI's field of view (+ margin), rounded to 32 voxels so that the crop rarely changes."""
         s = self.scan(role)
         shape = np.array(s["shape"])
         aff = self.correction(role) @ self.raw_affine(role)
-        c = self.subject.get("coreg")
-        if role == "ct" and c:
-            aff = np.array(c["ct_to_mri"]) @ aff
         lo, hi = np.zeros(3, int), shape.copy()
+        c = self.subject.get("coreg")
         if role == "ct" and c and crop and self.scan("mri", required=False):
-            roi = self.subject.get("roi")
-            if roi:  # the region of interest (+ margin) is enough, and keeps the CT at full resolution
-                h, ce = np.array(roi["size"]) / 2, np.array(roi["center"])
-                corners = np.array([ce + h * np.array([i, j, k]) for i in (-1, 1) for j in (-1, 1) for k in (-1, 1)])
-            else:
-                n = np.array(self.scan("mri")["shape"]) - 1
-                corners = apply(self.corrected_affine("mri"), [[i * n[0], j * n[1], k * n[2]]
-                                                               for i in (0, 1) for j in (0, 1) for k in (0, 1)])
-            vox = apply(np.linalg.inv(aff), corners)
+            n = np.array(self.scan("mri")["shape"]) - 1
+            corners = apply(self.corrected_affine("mri"), [[i * n[0], j * n[1], k * n[2]]
+                                                           for i in (0, 1) for j in (0, 1) for k in (0, 1)])
+            vox = apply(np.linalg.inv(np.array(c["ct_to_mri"]) @ aff), corners)
             margin = DISPLAY_MARGIN_MM / np.sqrt((aff[:3, :3] ** 2).sum(0))
-            lo = np.clip(np.floor(vox.min(0) - margin).astype(int), 0, shape)
-            hi = np.clip(np.ceil(vox.max(0) + margin).astype(int) + 1, 0, shape)
+            lo = np.clip((np.floor(vox.min(0) - margin) // 32 * 32).astype(int), 0, shape)
+            hi = np.clip((np.ceil((vox.max(0) + margin + 1) / 32) * 32).astype(int), 0, shape)
             if np.any(hi - lo < 2):  # no overlap with the MRI: show all of it
                 lo, hi = np.zeros(3, int), shape.copy()
-        limit = DISPLAY_MAX_VOXELS[role]
-        whole = not lo.any() and np.array_equal(hi, shape) and np.prod(shape.astype(float)) <= limit
         key = hashlib.sha1(np.round(aff, 5).tobytes() + s["sha256"].encode() + lo.tobytes() + hi.tobytes()
-                           + str(limit).encode()).hexdigest()[:12]
+                           + str(DISPLAY_MAX_VOXELS[role]).encode()).hexdigest()[:12]
+        return key, lo, hi, aff
+
+    def display_file(self, role, crop=True):
+        """What the viewer loads: the scan with its corrected header, cropped (CT) and averaged down when too large;
+        for display only (detection and registration always use the full scan)."""
+        key, lo, hi, aff = self._display_plan(role, crop)
+        shape, limit = np.array(self.scan(role)["shape"]), DISPLAY_MAX_VOXELS[role]
+        whole = not lo.any() and np.array_equal(hi, shape) and np.prod(shape.astype(float)) <= limit
         prefix = f"{role}-{'view' if crop else 'full'}"
         f = self.root / "cache" / f"{prefix}-{key}.nii"
         if not f.exists():
@@ -903,7 +895,7 @@ class Project:
         if not f.exists():
             for old in (self.root / "cache").glob("contacts-*.nii.gz"):
                 old.unlink()
-            volume.save(f, self.contact_labels(rows, by="lead"), aff)
+            _save_cropped(f, self.contact_labels(rows, by="lead"), aff)
         return f
 
     def contact_labels(self, rows, by="lead"):
@@ -1165,7 +1157,10 @@ class Project:
                 to_disp = self.display_from_raw(r) @ np.linalg.inv(np.array(s["pose"]))
                 frame_scans[r]["rods"] = {d["id"]: [np.round(apply(to_disp, d["p0"]), 2).tolist(), np.round(apply(to_disp, d["p1"]), 2).tolist()]
                                           for d in loc.rod_list(fr["model"])}
+        display = {r: {"view": self._display_plan(r)[0], "full": self._display_plan(r, crop=False)[0]}
+                   for r in ("mri", "ct") if scans.get(r)}  # versions of the viewer copies (the browser keeps them)
         return {"name": self.root.name, "species": sub["species"], "modules": self.modules(), "scans": scans, "coreg": sub.get("coreg"),
+                "display": display,
                 "roi": sub.get("roi"), "acpc": sub.get("acpc"), "acpc_matrix": am.tolist() if am is not None else None,
                 "acpc_distance": round(float(np.linalg.norm(np.subtract(a["ac"], a["pc"]))), 2)
                 if "ac" in a and "pc" in a else None,
@@ -1205,6 +1200,19 @@ def _reduce(data, affine, limit):
     scale = np.diag(list(f) + [1]).astype(float)
     scale[:3, 3] = (f - 1) / 2
     return out, affine @ scale
+
+
+def _save_cropped(path, lab, affine, margin=2):
+    """A viewer overlay holding only the labelled part of the grid (same voxels, shifted origin): loads fast."""
+    sl = ndimage.find_objects((lab > 0).astype(np.uint8))
+    if sl and sl[0] is not None:
+        lo = np.array([max(0, s.start - margin) for s in sl[0]])
+        lab = lab[tuple(slice(a, min(n, s.stop + margin)) for a, s, n in zip(lo, sl[0], lab.shape))]
+    else:  # nothing to show
+        lo, lab = np.zeros(3, int), np.zeros((1, 1, 1), lab.dtype)
+    shift = np.eye(4)
+    shift[:3, 3] = lo
+    volume.save(path, np.ascontiguousarray(lab), affine @ shift)
 
 
 def _balls(shape, affine, points, radius_mm):

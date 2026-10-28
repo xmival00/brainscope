@@ -33,6 +33,8 @@ DEFAULT_MODEL = {
     # Expected mounting: frame axes in the subject's (RAS) world, rows = frame X, Y, Z. Used to choose between fits
     # that match the rods equally well (with only the two lateral plates, up/down and front/back are ambiguous).
     "mount": [[-1, 0, 0], [0, 1, 0], [0, 0, -1]],
+    # The localizer's centre (frame mm): what "centre at the crosshair" puts there; midway between the side plates.
+    "centre": [100.0, 100.0, 100.0],
     "plates": [
         {"name": "right", "axis": "x", "position": 0.0, "rods": [40.0, 160.0], "z": [40.0, 160.0],
          "diagonal": [[40.0, 40.0], [160.0, 160.0]], "enabled": True},
@@ -67,7 +69,19 @@ def validate(model):
     if mount.shape != (3, 3) or not np.allclose(mount @ mount.T, np.eye(3), atol=1e-6):
         raise ValueError("mount must be a 3x3 rotation (rows: frame X, Y, Z in RAS)")
     m["mount"] = mount.tolist()
+    if m.get("centre") is not None:
+        m["centre"] = [float(v) for v in m["centre"]]
+        if len(m["centre"]) != 3:
+            raise ValueError("centre must be three numbers (frame mm)")
     return m
+
+
+def centre(model):
+    """The model's centre (frame mm): its own setting, else the middle of all plates' rods (used or not)."""
+    if model.get("centre") is not None:
+        return np.asarray(model["centre"], float)
+    pts = np.array([q for p in model["plates"] for _, a, b in segments(dict(model, plates=[dict(p, enabled=True)])) for q in (a, b)])
+    return (pts.min(0) + pts.max(0)) / 2
 
 
 def describe(r):
