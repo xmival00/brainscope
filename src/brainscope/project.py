@@ -481,16 +481,26 @@ class Project:
         return f
 
     def frame_model(self):
-        return self._frame().get("model") or loc.default_model()
+        return copy.deepcopy(self._frame().get("model") or loc.default_model())  # a copy: edits go through set_frame_model
 
     def set_frame_model(self, model=None, reset=False):
         m = loc.default_model() if reset else loc.validate(model)
         f = self._frame()
         self.checkpoint()
-        same = bool(f.get("model")) and f["model"]["plates"] == m["plates"] and not reset
+        old = {q["name"]: q for q in (f.get("model") or {}).get("plates", [])}
+        changed = {q["name"] for q in m["plates"] if old.get(q["name"]) != q} | (set(old) - {q["name"] for q in m["plates"]})
         f["model"] = m
-        if not same:  # new geometry: poses and rod points no longer apply (the intensity bands stay)
+        if reset:
             f["scans"] = {k: {"band": s.get("band")} for k, s in f["scans"].items()}
+            f.pop("use", None)
+        elif changed:  # e.g. a plate switched off or its N flipped: the placement stays, the fit has to be redone
+            for s in f["scans"].values():
+                if s.get("fitted"):
+                    s.update(fitted=False, method="by hand", summary=None, tracked=None)
+                if s.get("auto"):
+                    s["auto"]["fits"] = []
+                for k in ("manual", "excluded"):  # rod points of the changed plates no longer apply
+                    s[k] = {rid: v for rid, v in (s.get(k) or {}).items() if rid.rsplit("-", 1)[0] not in changed}
             f.pop("use", None)
         self.save()
 

@@ -156,3 +156,13 @@ def test_frame_per_scan_in_a_project(tmp_path):
     assert volume.load(p.frame_file("mri")).data.max() == 3       # model rods (2) and tracked centres (3)
     summary = p.summary()["frame"]
     assert summary["use"] == "mri" and summary["agreement"] < 0.3 and "tracked" not in summary["scans"]["ct"]
+    pose = p.subject["frame"]["scans"]["mri"]["pose"]
+    m = p.frame_model()
+    m["plates"][2]["enabled"] = False                             # use the left and right plates only
+    p.set_frame_model(m)
+    s = p.subject["frame"]["scans"]["mri"]
+    assert s["pose"] == pose and not s["fitted"] and p.frame_matrix() is None   # placement kept, fit to redo
+    p.frame_refine("mri")
+    rods = p.subject["frame"]["scans"]["mri"]["summary"]["rods"]
+    assert {k.rsplit("-", 1)[0] for k in rods} == {"right", "left"}
+    assert register.mean_displacement(p.frame_from_mri(), truth, (0, 0, 0), 60) < 0.3

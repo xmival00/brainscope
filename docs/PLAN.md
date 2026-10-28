@@ -216,8 +216,9 @@ first: it is testable without a UI, cheap to develop, and does not depend on the
 Status (2026-10-28): M0-M7 done. M8: validated on synthetic data (see `README.md`); validation on real human and
 pig scans is open. 0.1.7: subject steps + modules (D29), Brain model (D30), plane sliders, pan (D32). 0.1.8 = frame
 rework (D33-D36) in steps: (a) engine + storage, (b) Frame step UI (scan, band preview, expected rods, rough
-alignment, track/fit, CT-MRI agreement) = v0.1.8; (c) rod inspector, (d) debug bundle with full-resolution crops
-around the rods = 0.1.9. Then the drawing tools (brush, fill, undo, label volumes) with the guided Brain model (D38),
+alignment, track/fit, CT-MRI agreement) = v0.1.8; plates card (use, flip N, go) + legend = v0.1.9 (user, first
+real pig data: one N mirrored relative to the default, wish to use only the lateral plates); (c) rod inspector,
+(d) debug bundle with full-resolution crops around the rods = 0.1.10. Then the drawing tools (brush, fill, undo, label volumes) with the guided Brain model (D38),
 then Structures (D31). Installers are built by `.github/workflows/build.yml` (manual run or tag `v*`).
 
 ## 9. Later (context only, not v1)

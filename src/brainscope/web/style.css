@@ -112,3 +112,9 @@ kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 3p
 #sliceBar { display: flex; gap: 14px; padding: 4px 10px; border-bottom: 1px solid var(--line); background: var(--panel); color: var(--muted); font-size: 12px; }
 #sliceBar label { display: flex; align-items: center; gap: 6px; flex: 1; }
 #sliceBar input { flex: 1; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 4px 0 8px; }
+.legend span { display: inline-flex; align-items: center; gap: 5px; }
+.legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.nsvg line { stroke: #3cdcff; stroke-width: 2.5; stroke-linecap: round; }
+.nsvg.off line { stroke: var(--muted, #777); }

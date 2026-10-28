@@ -57,8 +57,10 @@ drag.
    (shown in red as you drag; CT rods can be only slightly brighter, or darker, than their plate), place the localizer
    model (*Auto-find*, or by hand: centre at the crosshair, 90° turns, nudges), then *Track rods and fit*: every rod is
    followed slice by slice and the model is fitted to the rod centres (residual per rod). With both scans fitted, their
-   agreement is shown and you choose which one gives the coordinates. The localizer geometry is editable per project;
-   the default must be checked against your localizer.
+   agreement is shown and you choose which one gives the coordinates. Per plate: use it or not (e.g. only the left and
+   right plates) and *flip N* when its diagonal runs the other way in your localizer; the placement is kept. A legend
+   names the colours. The localizer geometry is editable per project; the default must be checked against your
+   localizer.
 6. **Leads**: for each lead, put the crosshair on its deepest end and press <kbd>T</kbd>, on a point further
    along it and press <kbd>E</kbd>, pick the lead preset and press *Detect contacts*. The app then works in
    planes perpendicular to the lead, in stages:

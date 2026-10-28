@@ -664,6 +664,16 @@ function frameScan() {  // the scan the localizer is being found in
   S.fmScan = u && sc[u] ? u : sc.ct ? 'ct' : sc.mri ? 'mri' : null;
   return S.fmScan;
 }
+const FRAME_LEGEND = [['#ff3232', 'intensity band'], ['#ffd228', 'auto-found rods'], ['#3cdcff', 'localizer model'],
+  ['#46e66e', 'rod centres'], ['#ff50dc', 'manual centres']];  // = the colours of syncBand and the frame overlay
+function nPlateSvg(p) {  // the plate's N as drawn in the model: rods vertical (frame Z down), diagonal as set
+  const hs = [...p.rods, p.diagonal[0][0], p.diagonal[1][0]], h0 = Math.min(...hs), h1 = Math.max(...hs);
+  const z0 = Math.min(p.z[0], p.diagonal[0][1], p.diagonal[1][1]), z1 = Math.max(p.z[1], p.diagonal[0][1], p.diagonal[1][1]);
+  const X = (h) => 4 + 36 * (h - h0) / Math.max(h1 - h0, 1), Y = (z) => 3 + 22 * (z - z0) / Math.max(z1 - z0, 1);
+  const ln = (a, b, c, d) => `<line x1="${X(a)}" y1="${Y(b)}" x2="${X(c)}" y2="${Y(d)}"/>`;
+  return `<svg width="44" height="28" class="nsvg ${p.enabled ? '' : 'off'}">${p.rods.map((h) => ln(h, p.z[0], h, p.z[1])).join('')}
+    ${ln(p.diagonal[0][0], p.diagonal[0][1], p.diagonal[1][0], p.diagonal[1][1])}</svg>`;
+}
 function frameHTML() {
   const f = S.p.frame || {}, m = f.model, r = frameScan();
   if (!r) return '<h2>Stereotactic frame</h2><p class="muted">Import the CT or the MRI with the localizer first.</p>';
@@ -676,6 +686,14 @@ function frameHTML() {
   return `<h2>Stereotactic frame</h2>
   <p>Find the N-bar localizer in the CT or the MRI; contacts, AC/PC and plans then also get frame coordinates.</p>
   <div class="row"><label>scan</label><span class="seg" id="fmScan">${['ct', 'mri'].map((k) => `<button data-fs="${k}" class="${k === r ? 'on' : ''}" ${S.p.scans[k] ? '' : 'disabled'}>${k.toUpperCase()}${chip(k)}</button>`).join('')}</span></div>
+  <div class="legend small">${FRAME_LEGEND.map(([c, t]) => `<span><i style="background:${c}"></i>${t}</span>`).join('')}</div>
+  <div class="card"><b>Localizer plates</b>
+    ${m.plates.map((p, i) => `<div class="row"><label class="row" style="min-width:96px"><input type="checkbox" data-puse="${i}" ${p.enabled ? 'checked' : ''}> ${esc(p.name)}</label>
+      ${nPlateSvg(p)}<span class="spacer"></span>
+      <button class="ghost" data-pflip="${i}" title="Mirror this plate's diagonal: the N turns into its mirror image">flip N</button>
+      <button class="ghost" data-pgo="${esc(p.name)}" ${s.rods && p.enabled ? '' : 'disabled'} title="Crosshair to this plate">go</button></div>`).join('')}
+    <p class="muted small">Switch off plates that are not in the scan or should not be used; flip an N whose diagonal runs the other way
+    in your localizer. The placement stays; track again afterwards.</p></div>
   <div class="card"><b>1 · What counts as rod</b>
     <p class="muted small">Pick the intensity band so the rods light up red and the plates and bone do not. In the CT the rods can be only
     slightly brighter, or darker (fluid in plastic), than the plate around them.</p>
@@ -772,6 +790,15 @@ function bindFrame() {
   $$('[data-frot]').forEach((b) => { b.onclick = () => { const t = [0, 0, 0]; t[b.dataset.frot] = (S.fmDeg ?? 1) * b.dataset.s; pose({ op: 'nudge', rot: t }); }; });
   $$('[name="fmFit"]').forEach((el) => { el.onchange = () => pose({ op: 'auto', index: Number(el.value) }); });
   $('#fmTrack').onclick = () => act('/frame-refine', { scan: r }, 'Following the rods and fitting the localizer…');
+  const plate = (i, change) => { const m = JSON.parse(JSON.stringify(S.p.frame.model)); change(m.plates[i]); act('/frame-model', { model: m }); };
+  $$('[data-puse]').forEach((el) => { el.onchange = () => plate(Number(el.dataset.puse), (p) => { p.enabled = el.checked; }); });
+  $$('[data-pflip]').forEach((b) => { b.onclick = () => plate(Number(b.dataset.pflip), (p) => {
+    p.diagonal = [[p.diagonal[0][0], p.diagonal[1][1]], [p.diagonal[1][0], p.diagonal[0][1]]];  // same ends horizontally, heights swapped
+  }); });
+  $$('[data-pgo]').forEach((b) => { b.onclick = () => {
+    const segs = Object.entries(S.p.frame.scans[r].rods || {}).filter(([id]) => id.startsWith(`${b.dataset.pgo}-`)).flatMap(([, s]) => s);
+    if (segs.length) goTo([0, 1, 2].map((k) => segs.reduce((t, q) => t + q[k], 0) / segs.length));
+  }; });
   $$('[data-frod]').forEach((b) => { b.onclick = () => {
     const seg = S.p.frame.scans[r].rods?.[b.dataset.frod];
     if (seg) goTo(seg[0].map((x, i) => (x + seg[1][i]) / 2));
