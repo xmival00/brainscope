@@ -11,7 +11,7 @@ validated on real scans. The plan and design decisions are in [docs/PLAN.md](doc
 
 ## Getting the app
 
-Installers (Windows `-setup.exe` or portable `.zip`; macOS `.dmg` for Apple silicon and Intel) are attached to
+Installers (Windows `-setup.exe` or portable `.zip`; macOS `.dmg` for Apple silicon) are attached to
 the [Releases](https://github.com/xmival00/brainscope/releases). They are **not code-signed**, so confirm the first
 start:
 

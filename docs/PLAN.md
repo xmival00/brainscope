@@ -40,6 +40,7 @@ From the user (2026-10-28):
 | D18 | Import also MGZ/MGH, NRRD, MHA/MHD (converted to NIfTI once, on import). DICOM: dcm2niix first, SimpleITK's reader if dcm2niix cannot run (seen on a user machine); the self-test of each installer runs both. |
 | D19 | Orientation aids: labels on all four sides of each view, Niivue's orientation cube, and a small picture of how each view should look. |
 | D20 | CT intensity: at import the CT is classified as Hounsfield units, HU with an offset (e.g. 0-4095) or unknown scale; display and registration windows follow it. The user can always set the display window (min/max per volume) by hand. The CT is overlaid from the Import step on, placed by its header until coregistered. dcm2niix sidecars are read leniently (a Siemens CT had invalid JSON). |
+| D21 | macOS: Apple silicon only; no Intel Mac build. |
 
 Decided during implementation (the user delegated these, 2026-10-28):
 
