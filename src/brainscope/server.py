@@ -178,7 +178,7 @@ def get_project(h, name, q):
     return _summary(h, h.app.project(name))
 
 
-@route("POST", r"/api/p/([^/]+)/(undo|redo|species|orient|roi|coreg|nudge|coreg-accept|coreg-reset|lead|lead-edit)")
+@route("POST", r"/api/p/([^/]+)/(undo|redo|species|orient|roi|acpc|coreg|nudge|coreg-accept|coreg-reset|lead|lead-edit)")
 def mutate(h, name, action, q):
     p = h.app.project(name)
     b = h.body_json()
@@ -197,6 +197,8 @@ def mutate(h, name, action, q):
                          from_current=bool(b.get("from_current")))
         elif action == "nudge":
             p.nudge(b.get("rot", (0, 0, 0)), b.get("trans", (0, 0, 0)))
+        elif action == "acpc":
+            p.set_acpc(b.get("point"), b.get("xyz"), b.get("origin"), clear=bool(b.get("clear")))
         elif action == "roi":
             p.set_roi(b.get("center"), b.get("size"), clear=bool(b.get("clear")))
         elif action == "coreg-reset":
@@ -288,6 +290,14 @@ def vol(h, name, role, q):
     return h.file(f)
 
 
+@route("GET", r"/api/p/([^/]+)/vol/acpc\.nii\.gz")
+def vol_acpc(h, name, q):
+    p = h.app.project(name)
+    with p.lock:
+        f = p.acpc_file()
+    return h.file(f)
+
+
 @route("GET", r"/api/p/([^/]+)/vol/roi\.nii\.gz")
 def vol_roi(h, name, q):
     p = h.app.project(name)
@@ -341,6 +351,8 @@ def export(h, name, q):
     p = h.app.project(name)
     b = h.body_json()
     opts = {k: bool(b[k]) for k in ("tsv", "leads_file", "transforms", "mri", "ct", "labels") if k in b}
+    if b.get("space") in ("mri", "acpc"):
+        opts["space"] = b["space"]
     with p.lock:
         files = p.export(**opts)
     return h.json({"folder": str(p.root / "outputs"), "files": [Path(f).name for f in files]})

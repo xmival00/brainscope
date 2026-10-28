@@ -43,7 +43,9 @@ Projects are stored in `~/brainscope-projects` (change with `brainscope app --pr
    *region-of-interest* box around the brain so the body and loose soft tissue are ignored. The CT is
    overlaid from the start; set the display window of either scan in the viewer bar; *Center* finds the image (rigid, mutual information). For pigs, optionally restrict it to a box around
    the brain. Check with the CT overlay, adjust by hand if needed, accept.
-4. **Leads**: for each lead, put the crosshair on its deepest end and press <kbd>T</kbd>, on a point further
+4. **AC/PC** (optional): mark AC, PC and a midline point on the MRI; every contact then also gets AC/PC
+   coordinates (origin at the mid-commissural point, AC or PC), and the export can use them as the main x, y, z.
+5. **Leads**: for each lead, put the crosshair on its deepest end and press <kbd>T</kbd>, on a point further
    along it and press <kbd>E</kbd>, pick the lead preset and press *Detect contacts*. The app then works in
    planes perpendicular to the lead, in stages:
    - it follows the metal plane by plane to refine the lead's axis (straight, or curved as an option), ignoring
@@ -55,7 +57,7 @@ Projects are stored in `~/brainscope-projects` (change with `brainscope app --pr
    The inspector shows two lengthwise views of the straightened lead, the profile with the fitted model, and
    the perpendicular plane under the mouse. Drag a contact to move it, shift all contacts, or keep one contact
    and fit the others to it.
-5. **Export** the contacts table and, optionally, the coregistered volumes. Save and load results files. If
+6. **Export** the contacts table and, optionally, the coregistered volumes. Save and load results files. If
    something goes wrong, *Make debug bundle* writes a small zip (scans at about 2 mm, the CT around each lead,
    the project state without file names) that can be shared instead of the full scans.
 
@@ -64,11 +66,13 @@ left, three leads, and a CT misaligned to the MRI.
 
 ## Outputs
 
-All coordinates are **world coordinates (RAS+, mm) of the orientation-corrected MRI**.
+All coordinates are **world coordinates (RAS+, mm) of the orientation-corrected MRI**, or AC/PC coordinates if
+chosen at export.
 
 | File | Content |
 |---|---|
-| `sub-01_electrodes.tsv` | one row per contact: BIDS columns `name x y z size group type material manufacturer hemisphere`, then `lead contact_index`, MRI voxel `mri_i mri_j mri_k`, orientation-corrected CT world `ct_x ct_y ct_z`, `fit_mode` (`fitted`, `geometry`, `manual`) and `confidence` (0 to 1). `size` is the contact surface in mm². |
+| `sub-01_electrodes.tsv` | one row per contact: BIDS columns `name x y z size group type material manufacturer hemisphere`, then `lead contact_index`, MRI voxel `mri_i mri_j mri_k`, orientation-corrected CT world `ct_x ct_y ct_z`, `fit_mode` (`fitted`, `geometry`, `manual`), `confidence` (0 to 1) and, when AC/PC is set, `acpc_x acpc_y acpc_z`. `size` is the contact surface in mm². |
+| `sub-01_plan_vs_delivered.tsv` | per lead with a plan: planned and delivered point, error x/y/z, distance, depth and radial error |
 | `sub-01_coordsystem.json` | the coordinate system, the MRI file it refers to (SHA-256) and its corrected affine |
 | `sub-01_leads.brainscope.json` | the results file: leads, presets, axes and contacts; load it again in *Export → Load results* |
 | `ct_to_mri_ras.txt` | 4×4: orientation-corrected CT world → MRI world (RAS mm) |

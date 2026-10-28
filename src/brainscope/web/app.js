@@ -13,7 +13,7 @@ const S = {
   ctWindow: 'bone', ctOpacity: 0.5, ctVisible: true, base: 'mri', win: { mri: null, ct: null }, winRole: 'ct', align: { ct: null, mri: null }, lead: null, contact: null, view: null,
   draft: { name: '', preset: '', hemisphere: 'n/a', curved: false, tip: null, entry: null },
   loaded: { base: null, contacts: null }, nudgeMm: 1, nudgeDeg: 1,
-  exportOpts: { tsv: true, leads_file: true, transforms: true, mri: false, ct: false, labels: false },
+  exportOpts: { tsv: true, leads_file: true, transforms: true, mri: false, ct: false, labels: false, space: 'mri' },
   lastExport: null, replaceOnImport: false,
 };
 
@@ -64,7 +64,13 @@ function crosshairMM() {
 function updateCoords() {
   const m = crosshairMM();
   const space = S.step === 'orient' ? `${S.orientRole.toUpperCase()} (corrected)` : 'MRI';
-  $('#coords').textContent = m ? `${space}  x ${fmt(m[0], 1)}  y ${fmt(m[1], 1)}  z ${fmt(m[2], 1)} mm` : '';
+  let t = m ? `${space}  x ${fmt(m[0], 1)}  y ${fmt(m[1], 1)}  z ${fmt(m[2], 1)} mm` : '';
+  const a = S.p?.acpc_matrix;
+  if (m && a && S.step !== 'orient') {
+    const q = [0, 1, 2].map((i) => a[i][0] * m[0] + a[i][1] * m[1] + a[i][2] * m[2] + a[i][3]);
+    t += `   AC/PC  x ${fmt(q[0], 1)}  y ${fmt(q[1], 1)}  z ${fmt(q[2], 1)}`;
+  }
+  $('#coords').textContent = t;
 }
 function goTo(mm) {
   if (!nv.volumes.length) return;
@@ -127,6 +133,12 @@ function extraLayers() {  // label overlays on the MRI grid: contacts (leads, ex
       cm.A.push(255); cm.I.push(i + 1); cm.labels.push(l.name);
     });
     out.push({ key: `c${ck}`, url: `${P('/vol/contacts.nii.gz')}?v=${ck}`, name: `contacts-${ck}.nii.gz`, cm });
+  }
+  const ap = S.p.acpc || {};
+  if ((S.step === 'acpc' || S.step === 'leads') && S.p.scans.mri && (ap.ac || ap.pc || ap.msp)) {
+    const ak = hkey([ap, scanKey('mri')]);
+    out.push({ key: `a${ak}`, url: `${P('/vol/acpc.nii.gz')}?v=${ak}`, name: `acpc-${ak}.nii.gz`,
+      cm: { R: [0, 255, 63, 62], G: [0, 93, 167, 207], B: [0, 93, 255, 142], A: [0, 255, 255, 255], I: [0, 1, 2, 3], labels: ['', 'AC', 'PC', 'midline'] } });
   }
   if (S.step === 'coreg' && S.p.roi && S.p.scans.mri) {
     const rk = hkey([S.p.roi, scanKey('mri')]);
@@ -237,8 +249,8 @@ function render() {
   });
   const panel = $('#panel');
   if (!S.p) { panel.innerHTML = welcomeHTML(); bindWelcome(); $('#inspector').hidden = true; return; }
-  panel.innerHTML = { import: importHTML, orient: orientHTML, coreg: coregHTML, leads: leadsHTML, export: exportHTML }[S.step]();
-  ({ import: bindImport, orient: bindOrient, coreg: bindCoreg, leads: bindLeads, export: bindExport })[S.step]();
+  panel.innerHTML = { import: importHTML, orient: orientHTML, coreg: coregHTML, acpc: acpcHTML, leads: leadsHTML, export: exportHTML }[S.step]();
+  ({ import: bindImport, orient: bindOrient, coreg: bindCoreg, acpc: bindAcpc, leads: bindLeads, export: bindExport })[S.step]();
   $('#inspector').hidden = !(S.step === 'leads' && S.lead);
 }
 function stepStatus(step) {
@@ -249,6 +261,7 @@ function stepStatus(step) {
     case 'import': return sc.mri && sc.ct ? 'done' : 'todo';
     case 'orient': return sc.mri?.left_confirmed && sc.ct?.left_confirmed ? 'done' : (sc.mri || sc.ct ? 'warn' : 'todo');
     case 'coreg': return p.coreg?.accepted ? 'done' : (p.coreg ? 'warn' : 'todo');
+    case 'acpc': return p.acpc_matrix ? 'done' : (p.acpc ? 'warn' : 'todo');
     case 'leads': return p.leads.length ? 'done' : 'todo';
     default: return 'todo';
   }
@@ -516,7 +529,74 @@ function leadDetailHTML(l) {
     <td class="mode-${r.fit_mode}">${r.fit_mode}</td><td>${fmt(r.confidence, 2)}</td><td>${fmt(r.x, 1)}</td><td>${fmt(r.y, 1)}</td><td>${fmt(r.z, 1)}</td></tr>`).join('')}</table>
   ${c !== null && c !== undefined ? `<div class="row"><span class="muted small">Contact ${esc(l.contacts[c]?.name)}:</span>
     <button data-mv="-0.5">−0.5</button><button data-mv="-0.1">−0.1</button><button data-mv="0.1">+0.1</button><button data-mv="0.5">+0.5</button>
-    <button id="anchor" title="Keep this contact here and fit the others to it">Fit others to it</button></div>` : ''}`;
+    <button id="anchor" title="Keep this contact here and fit the others to it">Fit others to it</button></div>` : ''}
+  ${planHTML(l)}`;
+}
+function planHTML(l) {  // planned target versus the delivered lead
+  const pl = l.plan || { target: ['', '', ''], space: S.p.acpc_matrix ? 'acpc' : 'mri', point: 'tip', entry: null };
+  const r = l.plan_result;
+  const xyz = (id, v) => ['x', 'y', 'z'].map((a, i) => `<input type="number" step="any" id="${id}${i}" value="${v ? v[i] : ''}" placeholder="${a}" style="width:64px">`).join('');
+  return `<h3>Planned target</h3><div class="card">
+    <div class="row"><label>space</label><select id="plSpace"><option value="acpc" ${pl.space === 'acpc' ? 'selected' : ''}>AC/PC</option>
+      <option value="mri" ${pl.space === 'mri' ? 'selected' : ''}>MRI</option></select>
+      <label style="min-width:0">compare</label><select id="plPoint"><option value="tip">lead tip</option>
+      ${l.contacts.map((c) => `<option value="c${c.contact_index}" ${pl.point === `c${c.contact_index}` ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>
+    <div class="row"><label>target</label>${xyz('plT', l.plan?.target)}</div>
+    <div class="row"><label>entry</label>${xyz('plE', l.plan?.entry)}<span class="muted small">optional</span></div>
+    <div class="row"><button id="plSave">Save plan</button><button id="plClear" class="ghost" ${l.plan ? '' : 'disabled'}>Clear</button>
+      <button id="plFromCross" class="ghost" title="Fill the target with the crosshair position">target = crosshair</button></div>
+    ${r ? (r.error ? `<p class="small" style="color:var(--bad)">${esc(r.error)}</p>` : `<div class="kv">
+      <span>delivered</span><span class="mono">${r.delivered.map((x) => fmt(x, 2)).join(', ')}</span>
+      <span>error x, y, z</span><span class="mono">${fmt(r.dx, 2)}, ${fmt(r.dy, 2)}, ${fmt(r.dz, 2)} mm</span>
+      <span>distance</span><span class="mono">${fmt(r.distance, 2)} mm</span>
+      ${r.depth !== undefined ? `<span>depth</span><span class="mono">${fmt(r.depth, 2)} mm (+ = deeper)</span><span>radial</span><span class="mono">${fmt(r.radial, 2)} mm</span>` : ''}
+    </div>`) : ''}</div>`;
+}
+function bindPlan(l, edit) {
+  const read = (id) => [0, 1, 2].map((i) => $(`#${id}${i}`).value).map((v) => (v === '' ? null : Number(v)));
+  $('#plSave').onclick = () => {
+    const t = read('plT'), e = read('plE');
+    if (t.some((v) => v === null)) { toast('Enter all three target coordinates.', 'error'); return; }
+    edit({ action: 'plan', target: t, entry: e.some((v) => v === null) ? null : e, space: $('#plSpace').value, point: $('#plPoint').value });
+  };
+  $('#plClear').onclick = () => edit({ action: 'plan', clear: true });
+  $('#plFromCross').onclick = () => {
+    const m = crosshairMM(); if (!m) return;
+    let q = m;
+    const a = S.p.acpc_matrix;
+    if ($('#plSpace').value === 'acpc') {
+      if (!a) { toast('Set AC/PC first, or use MRI space.', 'error'); return; }
+      q = [0, 1, 2].map((i) => a[i][0] * m[0] + a[i][1] * m[1] + a[i][2] * m[2] + a[i][3]);
+    }
+    q.forEach((v, i) => { $(`#plT${i}`).value = v.toFixed(2); });
+  };
+}
+function acpcHTML() {
+  const a = S.p.acpc || {}, ready = S.p.scans.mri;
+  const row = (k, label, key) => `<div class="row"><label>${label}</label><span class="mono small" style="flex:1">${a[k] ? a[k].map((x) => fmt(x, 1)).join(', ') : '<span class="muted">not set</span>'}</span>
+    <button data-setpt="${k}" ${ready ? '' : 'disabled'}>Set at crosshair <kbd>${key}</kbd></button><button data-gopt="${k}" class="ghost" ${a[k] ? '' : 'disabled'}>Go</button></div>`;
+  return `<h2>AC/PC</h2>
+  <p>Mark the anterior and posterior commissures and one point on the midline (e.g. high on the interhemispheric fissure) on the MRI.
+  Every contact then also gets AC/PC coordinates: <b>+y</b> from PC towards AC, <b>+z</b> towards the midline point (superior; dorsal in
+  animals), <b>+x</b> to the subject's right.</p>
+  <div class="card">${row('ac', 'AC', 'A')}${row('pc', 'PC', 'P')}${row('msp', 'midline', 'M')}
+    <div class="row"><label>origin</label><select id="acOrigin">${[['mcp', 'mid-commissural point'], ['ac', 'AC'], ['pc', 'PC']].map(([v, t]) => `<option value="${v}" ${(a.origin || 'mcp') === v ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
+    ${S.p.acpc_distance !== null ? `<p class="small">AC–PC distance: <b>${fmt(S.p.acpc_distance, 1)} mm</b></p>` : ''}
+    <div class="row"><span class="badge ${S.p.acpc_matrix ? 'ok' : 'warn'}">${S.p.acpc_matrix ? 'AC/PC coordinates active' : 'incomplete'}</span><span class="spacer"></span>
+      <button id="acClear" class="ghost" ${S.p.acpc ? '' : 'disabled'}>Clear</button></div></div>
+  <p class="muted small">Markers: AC red, PC blue, midline green. Zoom in (+) for precise placement.</p>
+  <div class="row"><span class="spacer"></span><button class="primary" id="next">Next: leads</button></div>`;
+}
+function bindAcpc() {
+  $$('[data-setpt]').forEach((b) => { b.onclick = () => setAcpcPoint(b.dataset.setpt); });
+  $$('[data-gopt]').forEach((b) => { b.onclick = () => goTo(S.p.acpc[b.dataset.gopt]); });
+  $('#acOrigin').onchange = (e) => act('/acpc', { origin: e.target.value });
+  $('#acClear').onclick = () => act('/acpc', { clear: true });
+  $('#next').onclick = () => goStep('leads');
+}
+function setAcpcPoint(k) {
+  const m = crosshairMM();
+  if (m) act('/acpc', { point: k, xyz: m });
 }
 function bindLeads() {
   if (!S.p.coreg) return;
@@ -547,6 +627,7 @@ function bindLeads() {
   $$('tr[data-ci]').forEach((tr) => { tr.onclick = () => selectContact(Number(tr.dataset.ci)); });
   $$('[data-mv]').forEach((b) => { b.onclick = () => moveContact(S.contact, l.contacts[S.contact].s + Number(b.dataset.mv)); });
   if ($('#anchor')) $('#anchor').onclick = () => edit({ action: 'refit', index: S.contact, s: l.contacts[S.contact].s }, 'Fitting…');
+  bindPlan(l, edit);
 }
 function setPoint(which) {
   const m = crosshairMM();
@@ -680,7 +761,10 @@ function exportHTML() {
   return `<h2>Export</h2>
   ${ready ? '' : '<p class="muted">Detect at least one lead first.</p>'}
   <div class="card">
-    ${opt('tsv', 'Contacts table (<span class="mono">electrodes.tsv</span>, BIDS columns, MRI space) + coordinate system')}
+    ${opt('tsv', 'Contacts table (<span class="mono">electrodes.tsv</span>, BIDS columns) + coordinate system; with plans also <span class="mono">plan_vs_delivered.tsv</span>')}
+    <div class="row" style="margin-left:22px"><label>x, y, z in</label><select id="expSpace"><option value="mri" ${o.space === 'mri' ? 'selected' : ''}>MRI space</option>
+      <option value="acpc" ${o.space === 'acpc' ? 'selected' : ''} ${S.p.acpc_matrix ? '' : 'disabled'}>AC/PC coordinates</option></select>
+      <span class="muted small">(AC/PC columns are always added when defined)</span></div>
     ${opt('leads_file', 'Results file (<span class="mono">.brainscope.json</span>, can be loaded again)')}
     ${opt('transforms', 'Transforms (4×4 text, ITK .tfm)')}
     ${opt('mri', 'MRI with the corrected orientation (NIfTI)')}
@@ -704,6 +788,7 @@ function exportHTML() {
 }
 function bindExport() {
   $$('[data-opt]').forEach((c) => { c.onchange = () => { S.exportOpts[c.dataset.opt] = c.checked; }; });
+  $('#expSpace').onchange = (e) => { S.exportOpts.space = e.target.value; };
   $('#doExport').onclick = async () => {
     const r = await busy('Exporting…', () => api(P('/export'), S.exportOpts));
     if (r) { S.lastExport = r; toast(`${r.files.length} files written.`, 'ok'); render(); }
@@ -811,6 +896,7 @@ function drawPreset(p) {
 async function goStep(step) {
   S.step = step;
   if (step === 'leads') { S.ctWindow = 'metal'; S.base = 'ct'; }
+  if (step === 'acpc') S.base = 'mri';
   if (step === 'coreg') { S.ctWindow = 'bone'; S.base = 'mri'; }
   $('#ctWindow').value = S.ctWindow;
   $$('#base button').forEach((b) => b.classList.toggle('on', b.dataset.base === S.base));
@@ -825,6 +911,7 @@ document.addEventListener('keydown', (e) => {
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   if (S.step === 'leads' && k === 't') setPoint('tip');
   if (S.step === 'leads' && k === 'e') setPoint('entry');
+  if (S.step === 'acpc' && ['a', 'p', 'm'].includes(k)) setAcpcPoint({ a: 'ac', p: 'pc', m: 'msp' }[k]);
   if (k === 'o') { S.ctVisible = !S.ctVisible; refreshViewer(); }
   if (k === '+' || k === '=') zoom(1.4);
   if (k === '-') zoom(1 / 1.4);

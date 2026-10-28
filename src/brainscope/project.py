@@ -21,7 +21,7 @@ from pathlib import Path
 import numpy as np
 from scipy import ndimage
 
-from . import __version__, detect, register, volume
+from . import __version__, acpc, detect, register, volume
 from . import orientation as ori
 from . import presets as pr
 from .transforms import apply, rigid, write_itk
@@ -35,7 +35,9 @@ DISPLAY_MAX_VOXELS = {"mri": 100e6, "ct": 40e6}  # larger volumes fail to load i
 DISPLAY_MARGIN_MM = 20.0
 TSV_COLUMNS = ["name", "x", "y", "z", "size", "group", "type", "material", "manufacturer", "hemisphere",
                "lead", "contact_index", "mri_i", "mri_j", "mri_k", "ct_x", "ct_y", "ct_z", "fit_mode",
-               "confidence"]
+               "confidence", "acpc_x", "acpc_y", "acpc_z"]
+PLAN_COLUMNS = ["lead", "point", "space", "planned_x", "planned_y", "planned_z", "delivered_x", "delivered_y",
+                "delivered_z", "dx", "dy", "dz", "distance", "depth", "radial"]
 
 
 def _now():
@@ -355,6 +357,19 @@ class Project:
             lead["name"] = new
         elif action == "hemisphere":
             lead["hemisphere"] = str(kw["hemisphere"])
+        elif action == "plan":
+            if kw.get("clear"):
+                lead.pop("plan", None)
+            else:
+                space, point = kw.get("space", "acpc"), str(kw.get("point", "tip"))
+                if space not in ("acpc", "mri"):
+                    raise ValueError("space must be 'acpc' or 'mri'")
+                if point != "tip" and not (point[:1] == "c" and point[1:].isdigit()
+                                           and int(point[1:]) < len(lead["contacts"])):
+                    raise ValueError("point must be 'tip' or 'c<contact number>'")
+                entry = kw.get("entry")
+                lead["plan"] = {"target": [float(x) for x in kw["target"]], "space": space, "point": point,
+                                "entry": [float(x) for x in entry] if entry else None}
         elif action != "delete":
             raise ValueError(f"unknown action {action!r}")
         self.checkpoint()
@@ -369,6 +384,7 @@ class Project:
         m = self.ct_raw_to_mri()
         c_ct = self.correction("ct")
         inv_mri = np.linalg.inv(self.corrected_affine("mri"))
+        to_acpc = self.acpc_matrix()
         rows = []
         for L in self.leads if lead is None else [self.leads[self.lead_index(lead)]]:
             raw = detect.positions(L)
@@ -376,7 +392,8 @@ class Project:
                 continue
             p = L["preset"]
             xyz, ijk, ctc = apply(m, raw), apply(inv_mri, apply(m, raw)), apply(c_ct, raw)
-            for c, a, b, d in zip(L["contacts"], xyz, ijk, ctc):
+            ap = apply(to_acpc, xyz) if to_acpc is not None else [[None] * 3] * len(xyz)
+            for c, a, b, d, e in zip(L["contacts"], xyz, ijk, ctc, ap):
                 rows.append({
                     "name": pr.label(p, L["name"], c["index"]), "x": a[0], "y": a[1], "z": a[2],
                     "size": np.pi * p["diameter_mm"] * p["contact_length_mm"], "group": L["name"],
@@ -384,8 +401,69 @@ class Project:
                     "manufacturer": p.get("manufacturer", ""), "hemisphere": L.get("hemisphere", "n/a"),
                     "lead": L["name"], "contact_index": c["index"], "mri_i": b[0], "mri_j": b[1], "mri_k": b[2],
                     "ct_x": d[0], "ct_y": d[1], "ct_z": d[2], "fit_mode": c["mode"], "confidence": c["confidence"],
-                    "s": c["s"]})
+                    "acpc_x": e[0], "acpc_y": e[1], "acpc_z": e[2], "s": c["s"]})
         return rows
+
+    # ---- AC/PC ----
+    def set_acpc(self, point=None, xyz=None, origin=None, clear=False):
+        a = dict(self.subject.get("acpc") or {"origin": "mcp"})
+        if clear:
+            a = None
+        else:
+            if point is not None:
+                if point not in acpc.POINTS:
+                    raise ValueError(f"point must be one of {acpc.POINTS}")
+                a[point] = [float(x) for x in xyz]
+            if origin is not None:
+                if origin not in acpc.ORIGINS:
+                    raise ValueError(f"origin must be one of {acpc.ORIGINS}")
+                a["origin"] = origin
+            if all(k in a for k in acpc.POINTS):
+                acpc.matrix(a["ac"], a["pc"], a["msp"], a["origin"])  # validates the three points
+        self.checkpoint()
+        self.subject["acpc"] = a
+        self.save()
+
+    def acpc_matrix(self):
+        """MRI world -> AC/PC coordinates, or None while AC, PC and the midline point are not all set."""
+        a = self.subject.get("acpc") or {}
+        if not all(k in a for k in acpc.POINTS):
+            return None
+        return acpc.matrix(a["ac"], a["pc"], a["msp"], a.get("origin", "mcp"))
+
+    def acpc_file(self):
+        """Small balls on the MRI grid at AC (1), PC (2) and the midline point (3), for the viewer."""
+        a = self.subject.get("acpc") or {}
+        aff = self.corrected_affine("mri")
+        key = hashlib.sha1(json.dumps(a, sort_keys=True).encode() + aff.tobytes()).hexdigest()[:12]
+        f = self.root / "cache" / f"acpc-{key}.nii.gz"
+        if not f.exists():
+            for old in (self.root / "cache").glob("acpc-*.nii.gz"):
+                old.unlink()
+            pts = [(a[k], v) for v, k in enumerate(acpc.POINTS, start=1) if k in a]
+            volume.save(f, _balls(tuple(self.scan("mri")["shape"]), aff, pts, 1.5), aff)
+        return f
+
+    # ---- planned versus delivered ----
+    def delivered_point(self, L, point="tip"):
+        """MRI-world position of the lead tip (\"tip\") or of contact k (\"c<k>\")."""
+        axis = detect.Axis.from_dict(L["axis"])
+        s = 0.0 if point == "tip" else L["contacts"][int(point[1:])]["s"]
+        return apply(self.ct_raw_to_mri(), axis.point(s))
+
+    def plan_result(self, L):
+        pl = L.get("plan")
+        if not pl:
+            return None
+        p = self.delivered_point(L, pl.get("point", "tip"))
+        if pl["space"] == "acpc":
+            m = self.acpc_matrix()
+            if m is None:
+                return {"error": "set AC, PC and the midline point first"}
+            p = apply(m, p)
+        res = acpc.compare(pl["target"], p, pl.get("entry"))
+        res["delivered"] = [round(float(x), 3) for x in p]
+        return res
 
     def lead_view(self, name):
         ct = self.volume("ct")
@@ -476,7 +554,7 @@ class Project:
         rows = {(r["lead"], r["contact_index"]): r for r in self.contacts()}
         out = []
         for L in self.leads:
-            out.append({k: L.get(k) for k in ("name", "hemisphere", "preset", "curved", "fit")} | {
+            out.append({k: L.get(k) for k in ("name", "hemisphere", "preset", "curved", "fit", "plan")} | {
                 "axis": detect.Axis.from_dict(L["axis"]).transformed(m).to_dict(),
                 "contacts": [dict(c, label=rows[L["name"], c["index"]]["name"],
                                   x=rows[L["name"], c["index"]]["x"], y=rows[L["name"], c["index"]]["y"],
@@ -485,7 +563,7 @@ class Project:
                 "space": {"name": "MRI, orientation-corrected", "convention": "RAS+", "units": "mm",
                           "mri_source": s["source_name"], "mri_sha256": s["sha256"],
                           "mri_affine": self.corrected_affine("mri").tolist()},
-                "leads": out}
+                "acpc": self.subject.get("acpc"), "leads": out}
 
     def import_leads(self, doc, replace=False):
         if not isinstance(doc, dict) or doc.get("format") != LEADS_FORMAT:
@@ -502,7 +580,7 @@ class Project:
                         "axis": detect.Axis.from_dict(L["axis"]).transformed(to_raw).to_dict(),
                         "contacts": [{"index": int(c["index"]), "s": float(c["s"]), "mode": c.get("mode", "manual"),
                                       "confidence": c.get("confidence", 0.0)} for c in L["contacts"]],
-                        "imported": _now()})
+                        "plan": L.get("plan"), "imported": _now()})
         self.checkpoint()
         if replace:
             self.subject["leads"] = new
@@ -513,24 +591,48 @@ class Project:
         return warnings
 
     # ---- export ----
-    def export(self, folder=None, tsv=True, leads_file=True, transforms=True, mri=False, ct=False, labels=False):
+    def export(self, folder=None, tsv=True, leads_file=True, transforms=True, mri=False, ct=False, labels=False,
+               space="mri"):
         out = Path(folder) if folder else self.root / "outputs"
         out.mkdir(parents=True, exist_ok=True)
         sid = self.subject["id"]
         files = []
         if tsv:
             rows = self.contacts()
+            s = self.scan("mri")
+            if space == "acpc":  # AC/PC as the main x, y, z
+                a = self.subject.get("acpc") or {}
+                if self.acpc_matrix() is None:
+                    raise ValueError("set AC, PC and the midline point first, or export in MRI space")
+                for r in rows:
+                    r["x"], r["y"], r["z"] = r["acpc_x"], r["acpc_y"], r["acpc_z"]
+                origin = {"mcp": "the mid-commissural point", "ac": "AC", "pc": "PC"}[a.get("origin", "mcp")]
+                cs = {"iEEGCoordinateSystem": "ACPC" if a.get("origin") == "ac" else "Other",
+                      "iEEGCoordinateSystemDescription": f"AC/PC coordinates, origin at {origin}: +y from PC "
+                      "towards AC, +z towards the midline point (superior), +x to the subject's right; mm.",
+                      "BrainscopeACPC": a}
+            else:
+                cs = {"iEEGCoordinateSystem": "Other",
+                      "iEEGCoordinateSystemDescription": "World coordinates (RAS+, mm) of the orientation-corrected "
+                      f"MRI '{s['source_name']}' (sha256 {s['sha256']})."}
             fmt = lambda v: "n/a" if v in (None, "") else (f"{v:.3f}" if isinstance(v, (float, np.floating)) else str(v))
             lines = ["\t".join(TSV_COLUMNS)] + ["\t".join(fmt(r[c]) for c in TSV_COLUMNS) for r in rows]
             files.append(out / f"{sid}_electrodes.tsv")
             files[-1].write_text("\n".join(lines) + "\n")
-            s = self.scan("mri")
             files.append(out / f"{sid}_coordsystem.json")
-            _write_json(files[-1], {
-                "iEEGCoordinateSystem": "Other", "iEEGCoordinateUnits": "mm",
-                "iEEGCoordinateSystemDescription": "World coordinates (RAS+, mm) of the orientation-corrected MRI "
-                                                   f"'{s['source_name']}' (sha256 {s['sha256']}).",
-                "BrainscopeMRIAffine": self.corrected_affine("mri").tolist(), "BrainscopeVersion": __version__})
+            _write_json(files[-1], {"iEEGCoordinateUnits": "mm", **cs, "BrainscopeACPCLandmarks":
+                                    self.subject.get("acpc"), "BrainscopeMRIAffine": self.corrected_affine("mri").tolist(),
+                                    "BrainscopeVersion": __version__})
+            plans = [(L, self.plan_result(L)) for L in self.leads if L.get("plan")]
+            if plans:
+                prow = []
+                for L, r in plans:
+                    pl = L["plan"]
+                    prow.append([L["name"], pl["point"], pl["space"], *pl["target"], *(r.get("delivered") or [None] * 3),
+                                 *(r.get(k) for k in ("dx", "dy", "dz", "distance", "depth", "radial"))])
+                files.append(out / f"{sid}_plan_vs_delivered.tsv")
+                files[-1].write_text("\n".join(["\t".join(PLAN_COLUMNS)] + ["\t".join(fmt(v) for v in r) for r in prow])
+                                     + "\n")
         if leads_file:
             files.append(out / f"{sid}_leads.brainscope.json")
             _write_json(files[-1], self.leads_document())
@@ -641,10 +743,21 @@ class Project:
             contacts = self.contacts() if sub.get("coreg") else []
         except ValueError:
             contacts = []
-        leads = [{k: L.get(k) for k in ("name", "hemisphere", "preset", "curved", "fit", "tip_mri", "entry_mri")}
-                 | {"contacts": [r for r in contacts if r["lead"] == L["name"]]} for L in self.leads]
+        leads = []
+        for L in self.leads:
+            try:
+                pr_ = self.plan_result(L) if sub.get("coreg") else None
+            except (ValueError, IndexError) as e:
+                pr_ = {"error": str(e)}
+            leads.append({k: L.get(k) for k in ("name", "hemisphere", "preset", "curved", "fit", "tip_mri",
+                                                "entry_mri", "plan")}
+                         | {"contacts": [r for r in contacts if r["lead"] == L["name"]], "plan_result": pr_})
+        am = self.acpc_matrix()
+        a = sub.get("acpc") or {}
         return {"name": self.root.name, "species": sub["species"], "scans": scans, "coreg": sub.get("coreg"),
-                "roi": sub.get("roi"),
+                "roi": sub.get("roi"), "acpc": sub.get("acpc"), "acpc_matrix": am.tolist() if am is not None else None,
+                "acpc_distance": round(float(np.linalg.norm(np.subtract(a["ac"], a["pc"]))), 2)
+                if "ac" in a and "pc" in a else None,
                 "leads": leads, "can_undo": bool(self.undo_stack), "can_redo": bool(self.redo_stack),
                 "folder": str(self.root)}
 
@@ -678,3 +791,20 @@ def _reduce(data, affine, limit):
     scale = np.diag(list(f) + [1]).astype(float)
     scale[:3, 3] = (f - 1) / 2
     return out, affine @ scale
+
+
+def _balls(shape, affine, points, radius_mm):
+    """uint8 volume with a ball of `radius_mm` at each (world point, value)."""
+    lab = np.zeros(shape, np.uint8)
+    inv = np.linalg.inv(affine)
+    rad = radius_mm / np.sqrt((affine[:3, :3] ** 2).sum(0))
+    for p, val in points:
+        c = apply(inv, p)
+        lo = np.maximum(np.floor(c - rad).astype(int), 0)
+        hi = np.minimum(np.ceil(c + rad).astype(int) + 1, shape)
+        if np.any(hi <= lo):
+            continue
+        g = np.meshgrid(*[np.arange(a, b) for a, b in zip(lo, hi)], indexing="ij")
+        ball = sum(((g[i] - c[i]) / rad[i]) ** 2 for i in range(3)) <= 1
+        lab[tuple(slice(a, b) for a, b in zip(lo, hi))][ball] = val
+    return lab

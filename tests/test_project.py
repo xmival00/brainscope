@@ -120,3 +120,24 @@ def test_large_ct_display_is_cropped_and_reduced(tmp_path, case, monkeypatch):
     monkeypatch.setitem(prj.DISPLAY_MAX_VOXELS, "ct", 1e9)
     v = volume.load(p.display_file("ct"))  # coregistered: cropped to the MRI box, full resolution
     assert np.allclose(np.sqrt((v.affine[:3, :3] ** 2).sum(0)), np.sqrt((ct.affine[:3, :3] ** 2).sum(0)))
+
+
+def test_acpc_coordinates_and_plan(tmp_path, case):
+    p, truth = _run_workflow(tmp_path, case)
+    p.set_acpc("ac", (0, 10, 0))
+    p.set_acpc("pc", (0, -12, 0))
+    assert p.acpc_matrix() is None                       # midline point still missing
+    p.set_acpc("msp", (0, 0, 40))
+    r = {x["name"]: x for x in p.contacts()}["LA1"]
+    assert np.allclose([r["acpc_x"], r["acpc_y"], r["acpc_z"]], [r["x"], r["y"] + 1, r["z"]], atol=1e-6)
+    assert volume.load(p.acpc_file()).data.max() == 3
+    tip = p.delivered_point(p.leads[0])
+    target = np.array([tip[0] + 1.0, tip[1] + 1, tip[2]])  # in AC/PC = MRI + (0, 1, 0) here
+    p.edit_lead("LA", "plan", target=list(target), space="acpc", point="tip")
+    res = p.plan_result(p.leads[0])
+    assert res["dx"] == pytest.approx(-1, abs=1e-3) and res["dy"] == pytest.approx(0, abs=1e-3)
+    p.export(space="acpc")
+    tsv = (tmp_path / "p1" / "outputs" / "sub-01_electrodes.tsv").read_text().splitlines()
+    head = tsv[1].split("\t")
+    assert head[1:4] == head[-3:]                       # x, y, z are the AC/PC columns
+    assert (tmp_path / "p1" / "outputs" / "sub-01_plan_vs_delivered.tsv").exists()

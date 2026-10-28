@@ -44,6 +44,9 @@ From the user (2026-10-28):
 | D22 | Large scans: the viewer gets a display copy (CT cropped to the MRI's field of view once coregistered, then averaged down to at most 40 M voxels; MRI up to 100 M); a 512x512x1137 CT failed to load otherwise. Engine always uses the full scan. |
 | D23 | Coregistration: a rough alignment by one landmark clicked in each scan (CT and MRI scanner coordinates can be unrelated, and the CT can cover the whole body), then the automatic step starts from the current alignment; "Start over" resets it. A "Center" button brings the crosshair back into the image. |
 | D24 | Viewer zoom around the crosshair (buttons, keys + − 0); the mouse wheel keeps scrolling slices. Coregistration region of interest: a box (edge lengths per axis, default by species) saved in the project and shown as a green outline; only the MRI inside it is compared. |
+| D25 | AC/PC: the user marks AC, PC and a midline point on the MRI (own step). +y from PC to AC, +z towards the midline point, +x to the subject's right; origin mid-commissural point (default), AC or PC. Every contact gets AC/PC coordinates; the export can use them as the main x, y, z (BIDS "ACPC" when the origin is AC). |
+| D26 | Planned versus delivered: per lead, a planned target (and optional entry) in AC/PC or MRI coordinates is compared with the lead tip or a chosen contact: error vector, distance, and with an entry the depth and radial error. Exported as `plan_vs_delivered.tsv`. |
+| D27 | Stereotactic frame (Leksell-compatible localizer box) detection: planned, waiting for the localizer geometry and an example CT (section 10). |
 
 Decided during implementation (the user delegated these, 2026-10-28):
 
@@ -218,3 +221,8 @@ What v1 already does so these plug in:
 ## 10. Open questions
 
 1. Display: confirm "left is on left" = neurological display (D6). Implemented that way.
+2. Fiducial box (D27): exact localizer model and its rod geometry (or a manual); does the CT include the box; frame
+   coordinate convention wanted (Leksell X/Y/Z, origin, axis directions); planned targets given in frame coordinates
+   (X, Y, Z, ring/arc angles)?
+3. Which point is the "delivered target": the lead tip, the deepest contact centre, or a chosen contact (all three
+   are supported now)?
