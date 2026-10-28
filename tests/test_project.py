@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 import threading
 import urllib.request
 
@@ -152,3 +153,13 @@ def test_acpc_follows_a_later_mri_reorientation(tmp_path, case):
     ijk = apply(np.linalg.inv(p.corrected_affine("mri")), [1, 10, 2])
     p.orient("mri", "rz+")
     assert np.allclose(apply(p.corrected_affine("mri"), ijk), p.subject["acpc"]["ac"])  # same voxel, same anatomy
+
+
+def test_brain_model_in_a_project(tmp_path, case):
+    p, truth = _run_workflow(tmp_path, case)
+    p.build_brain(seed=(0, 0, 5), smooth=5, detail=2, cuts=[{"axis": "z", "keep": "above", "at": -20.0}])
+    b = p.subject["brain"]
+    assert 200 < b["volume_ml"] < 800 and len(b["leads"]) == 3
+    files = {Path(f).name for f in p.export_brain()}
+    assert {"brain.gii", "brain.obj", "brain.stl", "brain_mask.nii.gz", "brain_mri.nii.gz", "scene.json",
+            "lead-LA-shaft.gii", "lead-LA-contacts.obj"} <= files

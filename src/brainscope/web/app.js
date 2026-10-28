@@ -4,7 +4,7 @@
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const fmt = (v, d = 2) => (v === null || v === undefined || Number.isNaN(v) ? '–' : Number(v).toFixed(d));
+const fmt = (v, d = 2) => (v === null || v === undefined || Number.isNaN(v) ? '–' : Number(v).toFixed(d).replace(/^-(0\.?0*)$/, '$1'));
 const hkey = (o) => { const s = JSON.stringify(o); let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); };
 const xf = (a, m) => [0, 1, 2].map((i) => a[i][0] * m[0] + a[i][1] * m[1] + a[i][2] * m[2] + a[i][3]);  // 4x4 · point
 const LEAD_COLORS = ['#ff5d5d', '#3fa7ff', '#3ecf8e', '#f0b429', '#c77dff', '#ff8fab', '#5ce1e6', '#ffd166', '#a3e635', '#fb923c'];
@@ -13,9 +13,9 @@ const S = {
   state: null, p: null, step: 'import', presets: [], orientRole: 'mri', layout: 'multi',
   ctWindow: 'bone', ctOpacity: 0.5, ctVisible: true, base: 'mri', win: { mri: null, ct: null }, winRole: 'ct', align: { ct: null, mri: null }, lead: null, contact: null, view: null,
   draft: { name: '', preset: '', hemisphere: 'n/a', curved: false, tip: null, entry: null },
-  loaded: { base: null, contacts: null }, nudgeMm: 1, nudgeDeg: 1,
+  loaded: { base: null, contacts: null, meshes: null }, nudgeMm: 1, nudgeDeg: 1,
   exportOpts: { tsv: true, leads_file: true, transforms: true, mri: false, ct: false, labels: false, space: 'mri' },
-  lastExport: null, replaceOnImport: false,
+  lastExport: null, replaceOnImport: false, showLeads: true, brainParams: null, brainExport: null,
 };
 
 // ---------- engine calls ----------
@@ -54,8 +54,9 @@ const nv = new niivue.Niivue({
   show3Dcrosshair: true, isOrientationTextVisible: true, showAllOrientationMarkers: true, isOrientCube: true,
   dragAndDropEnabled: false, loadingText: '',
 });
+nv.setMouseEventConfig({ leftButton: { primary: 8, withShift: 3 }, centerButton: 3 });  // click: crosshair; Shift+drag, middle drag: pan (8, 3 = Niivue's crosshair, pan)
 let nvReady = nv.attachToCanvas($('#gl'));
-nv.onLocationChange = () => updateCoords();
+nv.onLocationChange = () => { updateCoords(); syncSliders(); };
 
 function crosshairMM() {
   if (!nv.volumes.length) return null;
@@ -85,6 +86,7 @@ function setLayout(l) {
   $$('#layout button').forEach((b) => b.classList.toggle('on', b.dataset.layout === l));
   nv.setSliceType({ multi: nv.sliceTypeMultiplanar, axial: nv.sliceTypeAxial, coronal: nv.sliceTypeCoronal,
     sagittal: nv.sliceTypeSagittal, render: nv.sliceTypeRender }[l]);
+  if (S.step === 'brain') refreshViewer();  // 3D: surfaces only; 2D: the MRI
 }
 // CT windows come from the engine (Hounsfield units, HU with an offset, or percentiles of an unknown scale)
 const ctLevels = () => S.p?.scans.ct?.levels || { orient: [-200, 1500], base_bone: [-200, 2000], base_metal: [1000, 4000],
@@ -102,7 +104,8 @@ function wantedVolumes() {
     if (p.scans[r]) out.push({ role: r, colormap: 'gray', ...(r === 'ct' ? { cal_min: ctLevels().orient[0], cal_max: ctLevels().orient[1] } : {}) });
     return out;
   }
-  if (S.step === 'acpc') return p.scans.mri ? [{ role: 'mri', colormap: 'gray' }] : [];  // MRI alone, full resolution
+  if (S.step === 'brain' && S.layout === 'render' && p.brain) return [];  // 3D: brain and lead surfaces only
+  if (S.step === 'acpc' || S.step === 'brain') return p.scans.mri ? [{ role: 'mri', colormap: 'gray' }] : [];  // MRI alone, full resolution
   const fused = p.scans.mri && p.scans.ct;  // before coregistration the CT is placed by its header
   const overlay = S.ctVisible ? S.ctOpacity : 0;
   if (fused && S.base === 'ct') {  // CT at its own resolution shows thin leads; MRI blended on top
@@ -143,6 +146,11 @@ function extraLayers() {  // label overlays on the MRI grid: contacts (leads, ex
     const ak = hkey([ap, scanKey('mri')]);
     out.push({ key: `a${ak}`, url: `${P('/vol/acpc.nii.gz')}?v=${ak}`, name: `acpc-${ak}.nii.gz`,
       cm: { R: [0, 255, 63, 62], G: [0, 93, 167, 207], B: [0, 93, 255, 142], A: [0, 255, 255, 255], I: [0, 1, 2, 3], labels: ['', 'AC', 'PC', 'midline'] } });
+  }
+  if (S.step === 'brain' && S.p.brain) {
+    const bk = hkey([S.p.brain.when]);
+    out.push({ key: `b${bk}`, url: `${P('/brain/brain_mask.nii.gz')}?v=${bk}`, name: `brainmask-${bk}.nii.gz`,
+      cm: { R: [0, 255], G: [0, 120], B: [0, 160], A: [0, 110], I: [0, 1], labels: ['', 'brain'] } });
   }
   const fr = S.p.frame || {};
   if (S.step === 'frame' && fr.n_rods) {
@@ -189,9 +197,30 @@ async function refreshViewer() {
       S.loaded.contacts = ek;
     }
   } catch (e) { toast(`Viewer: ${e.message}`, 'error'); }
+  await syncMeshes();
   $('#ctCtl').style.visibility = vols.length > 1 ? 'visible' : 'hidden';
   syncWindow(vols);
+  syncSliders();
   updateCoords();
+}
+async function syncMeshes() {  // brain surface and lead meshes, shown in the brain step (3D view)
+  const b = S.p?.brain, want = S.step === 'brain' && b ? hkey([b.when, S.showLeads]) : null;
+  if (want === S.loaded.meshes) return;
+  S.loaded.meshes = want;
+  const list = [];
+  if (want) {
+    list.push({ url: `${P('/brain/brain.gii')}?v=${want}`, name: `brain-${want}.gii`, rgba255: [235, 200, 205, 255] });
+    if (S.showLeads) b.leads.forEach((l) => {
+      const c = [1, 3, 5].map((i) => parseInt(l.color.slice(i, i + 2), 16));
+      list.push({ url: `${P(`/brain/lead-${l.file}-shaft.gii`)}?v=${want}`, name: `shaft-${l.file}-${want}.gii`, rgba255: [150, 160, 175, 255] });
+      list.push({ url: `${P(`/brain/lead-${l.file}-contacts.gii`)}?v=${want}`, name: `contacts-${l.file}-${want}.gii`, rgba255: [...c, 255] });
+    });
+  }
+  try { await nv.loadMeshes(list); } catch (e) { toast(`Viewer: ${e.message}`, 'error'); }
+}
+function syncSliders() {  // slice position sliders follow the crosshair
+  const c = nv.volumes.length ? nv.scene.crosshairPos : null;
+  [['#slX', 0], ['#slY', 1], ['#slZ', 2]].forEach(([id, i]) => { $(id).disabled = !c; if (c) $(id).value = c[i]; });
 }
 function syncWindow(vols) {
   const roles = vols.map((v) => v.role);
@@ -212,17 +241,17 @@ function setWindow() {
 async function loadState() {
   S.state = await api('/api/state');
   const sel = $('#projectSelect');
-  sel.innerHTML = '<option value="">— select a project —</option>' + S.state.projects.map((n) => `<option>${esc(n)}</option>`).join('');
+  sel.innerHTML = '<option value="">— select a subject —</option>' + S.state.projects.map((n) => `<option>${esc(n)}</option>`).join('');
   if (S.p) sel.value = S.p.name;
 }
 async function openProject(name) {
   if (!name) { S.p = null; S.lead = null; render(); refreshViewer(); return; }
-  await busy('Opening project…', async () => { await setProject(await api(`/api/p/${encodeURIComponent(name)}`)); });
+  await busy('Opening subject…', async () => { await setProject(await api(`/api/p/${encodeURIComponent(name)}`)); });
 }
 async function setProject(p) {
   const changed = S.p?.name !== p.name;
   S.p = p;
-  if (changed) { S.lead = null; S.contact = null; S.view = null; S.loaded = { base: null, contacts: null }; S.win = { mri: null, ct: null }; S.align = { ct: null, mri: null }; S.step = firstOpenStep(); }
+  if (changed) { S.lead = null; S.contact = null; S.view = null; S.loaded = { base: null, contacts: null }; S.win = { mri: null, ct: null }; S.align = { ct: null, mri: null }; S.brainParams = null; S.brainExport = null; S.step = firstOpenStep(); }
   if (S.lead && !p.leads.some((l) => l.name === S.lead)) { S.lead = null; S.view = null; }
   $('#projectSelect').value = p.name;
   $('#projectFolder').textContent = p.folder; $('#projectFolder').title = p.folder;
@@ -239,9 +268,9 @@ function firstOpenStep() {
   return p.leads.length ? 'leads' : 'coreg';
 }
 async function newProject() {
-  const name = prompt('Name of the new project (letters, digits, space, . _ -):');
+  const name = prompt('Name of the new subject (letters, digits, space, . _ -):');
   if (!name) return;
-  await busy('Creating project…', async () => { const p = await api('/api/projects', { name }); await loadState(); await setProject(p); });
+  await busy('Creating subject…', async () => { const p = await api('/api/projects', { name }); await loadState(); await setProject(p); });
 }
 async function demoProject() {
   await busy('Building the synthetic demo case (about 10 s)…', async () => {
@@ -260,9 +289,9 @@ function render() {
   const panel = $('#panel');
   if (!S.p) { panel.innerHTML = welcomeHTML(); bindWelcome(); $('#inspector').hidden = true; return; }
   panel.innerHTML = { import: importHTML, orient: orientHTML, coreg: coregHTML, acpc: acpcHTML, frame: frameHTML, leads: leadsHTML,
-    targets: targetsHTML, export: exportHTML }[S.step]();
+    targets: targetsHTML, export: exportHTML, brain: brainHTML }[S.step]();
   ({ import: bindImport, orient: bindOrient, coreg: bindCoreg, acpc: bindAcpc, frame: bindFrame, leads: bindLeads, targets: bindTargets,
-    export: bindExport })[S.step]();
+    export: bindExport, brain: bindBrain })[S.step]();
   $('#inspector').hidden = !(S.step === 'leads' && S.lead);
 }
 function stepStatus(step) {
@@ -276,6 +305,7 @@ function stepStatus(step) {
     case 'acpc': return p.acpc_matrix ? 'done' : (p.acpc ? 'warn' : 'todo');
     case 'frame': return p.frame?.fits?.length ? (p.frame.model.verified ? 'done' : 'warn') : 'todo';
     case 'targets': return p.leads.some((l) => l.plan) ? 'done' : 'todo';
+    case 'brain': return p.brain ? 'done' : 'todo';
     case 'leads': return p.leads.length ? 'done' : 'todo';
     default: return 'todo';
   }
@@ -285,9 +315,11 @@ function welcomeHTML() {
   return `<h2>Welcome</h2>
   <p>brainscope coregisters a CT to an MRI and finds the contacts of intracranial leads. Coordinates are reported in the
   orientation-corrected MRI space. <b>Research use only.</b></p>
-  <div class="row"><button class="primary" id="wNew">New project</button><button id="wDemo">Open a demo case</button></div>
-  <h3>Projects</h3>${list.length ? list.map((n) => `<div class="leadItem" data-open="${esc(n)}">${esc(n)}</div>`).join('') : '<p class="muted">No projects yet.</p>'}
-  <p class="muted small">Projects are stored in ${esc(S.state?.projects_root || '')}</p>`;
+  <p class="small">Each subject (patient or animal) has shared steps (import, orientation, AC/PC, coregistration, frame) and independent
+  tasks built on them: <b>Leads</b> (contacts, targets) and <b>Brain model</b> (figures, 3D export).</p>
+  <div class="row"><button class="primary" id="wNew">New subject</button><button id="wDemo">Open a demo case</button></div>
+  <h3>Subjects</h3>${list.length ? list.map((n) => `<div class="leadItem" data-open="${esc(n)}">${esc(n)}</div>`).join('') : '<p class="muted">No subjects yet.</p>'}
+  <p class="muted small">Subjects are stored in ${esc(S.state?.projects_root || '')}</p>`;
 }
 function bindWelcome() {
   $('#wNew').onclick = newProject; $('#wDemo').onclick = demoProject;
@@ -683,6 +715,60 @@ function bindTargets() {
   bindPlan(S.p.leads.find((x) => x.name === S.target), (body) => act('/lead-edit', { name: S.target, ...body }));
   $('#next').onclick = () => goStep('export');
 }
+function brainHTML() {
+  if (!S.p.coreg) return '<h2>Brain model</h2><p class="muted">Coregister the CT to the MRI first (the CT gives the skull).</p>';
+  const b = S.p.brain, bp = S.brainParams || (S.brainParams = JSON.parse(JSON.stringify(b?.params || { use_mri: true, threshold: null, smooth: 20, detail: 1, cuts: [] })));
+  const ax = { x: 'sagittal', y: 'coronal', z: 'axial' };
+  const cutName = (c) => ({ 'z.above': 'remove below', 'z.below': 'remove above', 'y.above': 'remove behind', 'y.below': 'remove in front',
+    'x.below': 'keep left', 'x.above': 'keep right' })[`${c.axis}.${c.keep}`];
+  return `<h2>Brain model</h2>
+  <p>A brain surface for figures: the space inside the skull from the CT, refined with the MRI so gyri and sulci show, cut as you need,
+  smoothed, with the leads in 3D. Exported for Python/MATLAB.</p>
+  <div class="card">
+    <div class="row"><label>seed</label><span class="mono small" style="flex:1">${bp.seed ? bp.seed.map((x) => fmt(x, 1)).join(', ') : 'AC/PC midpoint, box or MRI centre'}</span>
+      <button id="bSeed" title="A point inside the brain">Seed at crosshair</button></div>
+    <label class="row small"><input type="checkbox" id="bMri" ${bp.use_mri ? 'checked' : ''}> Use the MRI to separate brain from CSF (shows gyri and sulci)</label>
+    <div class="row"><label>MRI threshold</label><input type="number" id="bThr" step="any" value="${bp.threshold ?? ''}" placeholder="${b?.threshold_used != null ? fmt(b.threshold_used, 0) : 'auto'}" style="width:90px">
+      <span class="muted small">brain brighter than this (auto: Otsu)</span></div>
+    <h3>Cuts at the crosshair</h3>
+    <div class="grid3"><button data-cut="z.above">remove below</button><button data-cut="z.below">remove above</button><button data-cut="y.above">remove behind</button>
+      <button data-cut="y.below">remove in front</button><button data-cut="x.below">keep left</button><button data-cut="x.above">keep right</button></div>
+    ${bp.cuts.map((c, i) => `<div class="row small"><span style="flex:1">${cutName(c)} · ${ax[c.axis]} at ${fmt(c.at, 1)} mm</span><button data-uncut="${i}" class="ghost">✕</button></div>`).join('')}
+    <div class="row"><label>smoothing</label><input type="range" id="bSmooth" min="0" max="60" step="1" value="${bp.smooth}" style="flex:1"><span class="mono small">${bp.smooth}</span></div>
+    <div class="row"><label>detail</label><select id="bDetail">${[[1, 'fine'], [2, 'medium'], [3, 'coarse']].map(([v, t]) => `<option value="${v}" ${bp.detail === v ? 'selected' : ''}>${t}</option>`).join('')}</select>
+      <span class="spacer"></span><button class="primary" id="bBuild">Build</button></div>
+  </div>
+  ${b ? `<div class="card"><div class="kv"><span>volume</span><span>${fmt(b.volume_ml, 1)} ml</span><span>surface</span><span>${b.vertices.toLocaleString()} vertices</span>
+    <span>leads</span><span>${b.leads.length}</span></div>
+    <label class="row small"><input type="checkbox" id="bLeads" ${S.showLeads ? 'checked' : ''}> show leads</label>
+    <div class="row"><button id="b3d">3D view</button><button id="bExport">Export</button></div>
+    ${S.brainExport ? `<p class="small">Written to <span class="mono">${esc(S.brainExport.folder)}</span>: ${S.brainExport.files.map(esc).join(', ')}</p>` : ''}</div>` : ''}`;
+}
+function bindBrain() {
+  if (!S.p.coreg) return;
+  const bp = S.brainParams;
+  $('#bSeed').onclick = () => { bp.seed = crosshairMM(); render(); };
+  $('#bMri').onchange = (e) => { bp.use_mri = e.target.checked; };
+  $('#bThr').onchange = (e) => { bp.threshold = e.target.value === '' ? null : Number(e.target.value); };
+  $$('[data-cut]').forEach((el) => { el.onclick = () => {
+    const m = crosshairMM(); if (!m) return;
+    const [axis, keep] = el.dataset.cut.split('.');
+    bp.cuts = bp.cuts.filter((c) => c.axis !== axis || c.keep !== keep);  // the same cut again moves it
+    bp.cuts.push({ axis, keep, at: m[{ x: 0, y: 1, z: 2 }[axis]] }); render();
+  }; });
+  $$('[data-uncut]').forEach((el) => { el.onclick = () => { bp.cuts.splice(Number(el.dataset.uncut), 1); render(); }; });
+  $('#bSmooth').oninput = (e) => { bp.smooth = Number(e.target.value); e.target.nextElementSibling.textContent = bp.smooth; };
+  $('#bDetail').onchange = (e) => { bp.detail = Number(e.target.value); };
+  $('#bBuild').onclick = async () => {
+    if (await act('/brain', bp, 'Building the brain model (mask, cuts, surface, leads)…')) { S.showLeads = S.showLeads ?? true; setLayout('render'); render(); refreshViewer(); }
+  };
+  if ($('#bLeads')) $('#bLeads').onchange = (e) => { S.showLeads = e.target.checked; refreshViewer(); };
+  if ($('#b3d')) $('#b3d').onclick = () => setLayout('render');
+  if ($('#bExport')) $('#bExport').onclick = async () => {
+    const r = await busy('Exporting the brain model…', () => api(P('/brain-export'), {}));
+    if (r) { S.brainExport = r; render(); }
+  };
+}
 function acpcHTML() {
   const a = S.p.acpc || {}, ready = S.p.scans.mri;
   const row = (k, label, key) => `<div class="row"><label>${label}</label><span class="mono small" style="flex:1">${a[k] ? a[k].map((x) => fmt(x, 1)).join(', ') : '<span class="muted">not set</span>'}</span>
@@ -1012,6 +1098,7 @@ async function goStep(step) {
     S.ctWindow = 'metal'; S.base = vol('mri') <= 2 * vol('ct') ? 'mri' : 'ct';
   }
   if (step === 'frame') { S.ctWindow = 'bone'; S.base = 'ct'; }
+  if (step === 'brain') S.base = 'mri';
   if (step === 'acpc') S.base = 'mri';
   if (step === 'coreg') { S.ctWindow = 'bone'; S.base = 'mri'; }
   $('#ctWindow').value = S.ctWindow;
@@ -1042,6 +1129,13 @@ $('#winHi').onchange = setWindow;
 $('#winAuto').onclick = () => { S.win[S.winRole] = null; refreshViewer(); };
 $$('#base button').forEach((b) => { b.onclick = () => setBase(b.dataset.base); });
 $('#centerView').onclick = centerView;
+[['#slX', 0], ['#slY', 1], ['#slZ', 2]].forEach(([id, i]) => {
+  $(id).oninput = (e) => {
+    if (!nv.volumes.length) return;
+    const p = [...nv.scene.crosshairPos]; p[i] = Number(e.target.value);
+    nv.scene.crosshairPos = p; nv.drawScene(); updateCoords();
+  };
+});
 $('#zoomIn').onclick = () => zoom(1.4);
 $('#zoomOut').onclick = () => zoom(1 / 1.4);
 $('#zoomFit').onclick = () => zoom(0);

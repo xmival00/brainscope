@@ -51,6 +51,7 @@ From the user (2026-10-28):
 | D29 | Subject-centred: a "project" folder is one subject. Shared prerequisites (Import, Orient, AC/PC, Coregister, Frame) feed independent task modules: **Leads** (Leads, Targets, Export), **Brain model** (paper figures), **Structures** (target segmentation). |
 | D30 | Brain model: intracranial mask from the CT (region grown inside the skull from a seed, thin connections cut), refined with the MRI (brain vs CSF threshold) so gyri and sulci show; user cuts (planes at the crosshair, e.g. remove brainstem/cerebellum or one hemisphere); smoothing; surface mesh (marching cubes, scikit-image). Leads as 3D meshes (depth: cylinders; strips: 1xN via the curved-lead mode and a strip preset, rendered as discs). Export for Python/MATLAB: NIfTI masks, GIfTI/OBJ/STL meshes, contact tables. |
 | D31 | Structures (e.g. ANT, HPC): label table per subject; Niivue drawing tools on the MRI (pen, eraser, intensity-limited fill, click-to-segment as the smart brush, undo); saved as a label NIfTI on the MRI grid; volumes and meshes exported. Plane sliders for moving through slices without clicking. |
+| D32 | Viewer navigation: plain click always moves the crosshair; Shift+drag or middle-button drag moves (pans) the zoomed 2D view (Niivue's pan mode); *fit* resets zoom and pan. |
 
 Decided during implementation (the user delegated these, 2026-10-28):
 
@@ -206,7 +207,8 @@ first: it is testable without a UI, cheap to develop, and does not depend on the
 | M8 | Validation on human public data and the user's pig cases; user docs; v0.1 release | targets of section 6 met or re-set with the user |
 
 Status (2026-10-28): M0-M7 done. M8: validated on synthetic data (see `README.md`); validation on real human and
-pig scans is open. Installers are built by `.github/workflows/build.yml` (manual run or tag `v*`).
+pig scans is open. 0.1.7: subject steps + modules (D29), Brain model (D30), plane sliders, pan (D32); next 0.1.8:
+Structures (D31). Installers are built by `.github/workflows/build.yml` (manual run or tag `v*`).
 
 ## 9. Later (context only, not v1)
 

@@ -21,7 +21,8 @@ first, and record new decisions there (section 2).
 ## Code map
 - Engine (`src/brainscope/`): `volume` (NIfTI), `orientation` (header-only fixes), `transforms` (RAS/LPS, the only
   place they meet), `register` (rigid MI), `detect` (lead tracking + contact fit), `presets`, `dicom`, `project`
-  (project folder, undo, leads in CT-raw world, exports, results file), `acpc`, `localizer` (N-bar frame), `server` (HTTP API + static UI), `app`
+  (project folder, undo, leads in CT-raw world, exports, results file), `acpc`, `localizer` (N-bar frame),
+  `brainmodel` (brain mask, cuts, surfaces, lead meshes, GIfTI/OBJ/STL), `server` (HTTP API + static UI), `app`
   (pywebview window, browser fallback), `cli`, `demo`/`phantom` (synthetic data with ground truth).
 - UI: `src/brainscope/web/` (plain JS + vendored Niivue, no build step).
 - Packaging: `packaging/` + `.github/workflows/build.yml` (manual or tag `v*`); tests: `.github/workflows/ci.yml`.
@@ -39,7 +40,8 @@ demo case (`brainscope demo DIR`), see git history for the script pattern.
   v0.1.3 (display copies of large scans, landmark rough alignment, Center button, logo, Apple silicon only);
   v0.1.4 (zoom, coregistration region-of-interest box);
   v0.1.5 (AC/PC landmarks and coordinates, planned vs delivered);
-  v0.1.6 (stereotactic frame from the N-bar localizer, Targets step, AC/PC on the MRI first).
-- Next: 0.1.7 = plane sliders, subject/task navigation, Brain model module (PLAN D29-D30); 0.1.8 = Structures
-  module (D31). Also: verify the localizer geometry on a real CT (PLAN section 10); the user tests on real human and pig data and sends debug bundles; tune detection on them (DBS leads,
+  v0.1.6 (stereotactic frame from the N-bar localizer, Targets step, AC/PC on the MRI first);
+  v0.1.7 (subject steps + Leads/Brain model modules, Brain model (`brainmodel`), plane sliders, pan; PLAN D29-D30, D32).
+- Next: 0.1.8 = Structures module (D31: label table, Niivue drawing + click-to-segment smart brush, label NIfTI);
+  strips (1xN, preset type "strip") in the Leads UI; ask the user whether 2D grids are needed. Also: verify the localizer geometry on a real CT (PLAN section 10); the user tests on real human and pig data and sends debug bundles; tune detection on them (DBS leads,
   contacts mostly not separable); answer `docs/PLAN.md` section 10.

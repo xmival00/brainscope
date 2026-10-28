@@ -13,6 +13,8 @@ import itertools
 import hashlib
 import json
 import os
+
+import nibabel as nib
 import re
 import shutil
 import threading
@@ -22,7 +24,7 @@ from pathlib import Path
 import numpy as np
 from scipy import ndimage
 
-from . import __version__, acpc, detect, register, volume
+from . import __version__, acpc, brainmodel, detect, register, volume
 from . import localizer as loc
 from . import orientation as ori
 from . import presets as pr
@@ -35,6 +37,7 @@ SPECIES = ("human", "pig", "other")
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,63}")
 DISPLAY_MAX_VOXELS = {"mri": 100e6, "ct": 40e6}  # larger volumes fail to load in the viewer (seen: 300M voxels)
 DISPLAY_MARGIN_MM = 20.0
+LEAD_COLORS = ["#ff5d5d", "#3fa7ff", "#3ecf8e", "#f0b429", "#c77dff", "#ff8fab", "#5ce1e6", "#ffd166", "#a3e635", "#fb923c"]
 TSV_COLUMNS = ["name", "x", "y", "z", "size", "group", "type", "material", "manufacturer", "hemisphere",
                "lead", "contact_index", "mri_i", "mri_j", "mri_k", "ct_x", "ct_y", "ct_z", "fit_mode",
                "confidence", "acpc_x", "acpc_y", "acpc_z", "frame_x", "frame_y", "frame_z"]
@@ -535,6 +538,98 @@ class Project:
             volume.save(out, lab, aff)
         return out
 
+    # ---- brain model (figures) ----
+    def ct_on_mri(self):
+        """The CT resampled onto the MRI grid (cached in memory for the current coregistration)."""
+        key = (self.scan("ct")["sha256"], json.dumps(self.subject["coreg"]["ct_to_mri"]), json.dumps(self.scan("ct")["orient"]))
+        if getattr(self, "_ct_on_mri", (None,))[0] != key:
+            self._ct_on_mri = (key, self.ct_in_mri_grid())
+        return self._ct_on_mri[1]
+
+    def default_seed(self):
+        a = self.subject.get("acpc") or {}
+        if "ac" in a and "pc" in a:
+            return ((np.array(a["ac"]) + np.array(a["pc"])) / 2).tolist()
+        if self.subject.get("roi"):
+            return self.subject["roi"]["center"]
+        s = self.scan("mri")
+        return apply(self.corrected_affine("mri"), (np.array(s["shape"]) - 1) / 2).tolist()
+
+    def build_brain(self, seed=None, use_mri=True, threshold=None, smooth=20, detail=1, cuts=()):
+        """Brain mask (CT inside the skull, refined by the MRI), cuts, surface and lead meshes, in cache/brain."""
+        self.coreg_matrix()
+        aff = self.corrected_affine("mri")
+        seed = seed or self.default_seed()
+        box = None
+        roi = self.subject.get("roi")
+        if roi:
+            h, c = np.array(roi["size"]) / 2 + 10, np.array(roi["center"])
+            box = brainmodel.apply_cuts(np.ones(tuple(self.scan("mri")["shape"]), bool), aff,
+                                        [{"axis": ax, "keep": "above", "at": c[i] - h[i]} for i, ax in enumerate("xyz")]
+                                        + [{"axis": ax, "keep": "below", "at": c[i] + h[i]} for i, ax in enumerate("xyz")])
+        mask = brainmodel.intracranial(self.ct_on_mri(), aff, seed, self.ct_levels(), box=box)
+        thr = None
+        if use_mri:
+            mask, thr = brainmodel.refine_with_mri(mask, self.volume("mri").data, threshold)
+        mask = brainmodel.apply_cuts(mask, aff, list(cuts))
+        d = self.root / "cache" / "brain"
+        shutil.rmtree(d, ignore_errors=True)
+        d.mkdir(parents=True)
+        volume.save(d / "brain_mask.nii.gz", mask.astype(np.uint8), aff)
+        v, f = brainmodel.surface(mask, aff, smooth=smooth, step=detail)
+        brainmodel.write_gifti(d / "brain.gii", v, f)
+        center = v.mean(0)
+        leads = []
+        if self.leads:
+            m = self.ct_raw_to_mri()
+            for i, L in enumerate(self.leads):
+                ax = detect.Axis.from_dict(L["axis"]).transformed(m)
+                s_end = max(c["s"] for c in L["contacts"]) + 20.0
+                if L.get("entry_mri"):
+                    s_end = max(s_end, float((np.array(L["entry_mri"]) - ax.origin) @ ax.u) + 10.0)
+                (sv, sf), (cv, cf) = brainmodel.lead_meshes(ax.point, L["contacts"], L["preset"], s_end, center)
+                name = re.sub(r"[^A-Za-z0-9_-]", "_", L["name"])
+                brainmodel.write_gifti(d / f"lead-{name}-shaft.gii", sv, sf)
+                brainmodel.write_gifti(d / f"lead-{name}-contacts.gii", cv, cf)
+                leads.append({"name": L["name"], "file": name, "color": LEAD_COLORS[i % len(LEAD_COLORS)]})
+        vox = float(np.prod(np.sqrt((aff[:3, :3] ** 2).sum(0))))
+        self.checkpoint()
+        self.subject["brain"] = {"params": {"seed": [float(x) for x in seed], "use_mri": bool(use_mri),
+                                            "threshold": threshold, "smooth": int(smooth), "detail": int(detail),
+                                            "cuts": list(cuts)},
+                                 "threshold_used": thr, "volume_ml": round(float(mask.sum()) * vox / 1000, 2),
+                                 "vertices": int(len(v)), "faces": int(len(f)), "leads": leads, "when": _now()}
+        self.save()
+
+    def export_brain(self):
+        """Files for figures and for Python/MATLAB: masks (NIfTI), meshes (GIfTI, OBJ, STL), scene.json."""
+        b = self.subject.get("brain")
+        if not b:
+            raise ValueError("build the brain model first")
+        src, out = self.root / "cache" / "brain", self.root / "outputs" / "brain"
+        shutil.rmtree(out, ignore_errors=True)
+        out.mkdir(parents=True)
+        shutil.copyfile(src / "brain_mask.nii.gz", out / "brain_mask.nii.gz")
+        mask = volume.load(src / "brain_mask.nii.gz").data > 0
+        volume.save(out / "brain_mri.nii.gz", np.where(mask, self.volume("mri").data, 0).astype(np.float32),
+                    self.corrected_affine("mri"))
+        items = []
+        for g in sorted(src.glob("*.gii")):
+            img = nib.load(str(g))
+            v, f = img.darrays[0].data, img.darrays[1].data
+            shutil.copyfile(g, out / g.name)
+            brainmodel.write_obj(out / (g.stem + ".obj"), v, f)
+            if g.stem == "brain":
+                brainmodel.write_stl(out / "brain.stl", v, f)
+            lead = next((L for L in b["leads"] if g.stem.startswith(f"lead-{L['file']}-")), None)
+            items.append({"file": g.name, "obj": g.stem + ".obj", "kind": "brain" if g.stem == "brain" else
+                          ("lead contacts" if g.stem.endswith("contacts") else "lead shaft"),
+                          "lead": lead["name"] if lead else None,
+                          "color": lead["color"] if lead and g.stem.endswith("contacts") else
+                          ("#d9d9d9" if g.stem == "brain" else "#9aa3b2")})
+        brainmodel.write_scene(out / "scene.json", items)
+        return [str(f) for f in sorted(out.iterdir())]
+
     # ---- planned versus delivered ----
     def delivered_point(self, L, point="tip"):
         """MRI-world position of the lead tip (\"tip\") or of contact k (\"c<k>\")."""
@@ -875,7 +970,7 @@ class Project:
                 if "ac" in a and "pc" in a else None,
                 "frame": {k: v for k, v in fr.items() if k != "rods"} | {"model": self.frame_model(),
                                                                          "n_rods": len(fr.get("rods", []))},
-                "frame_from_display": disp.tolist() if disp is not None else None,
+                "frame_from_display": disp.tolist() if disp is not None else None, "brain": sub.get("brain"),
                 "leads": leads, "can_undo": bool(self.undo_stack), "can_redo": bool(self.redo_stack),
                 "folder": str(self.root)}
 

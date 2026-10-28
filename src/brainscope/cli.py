@@ -88,7 +88,8 @@ def selftest():
     import tempfile
     from pathlib import Path
 
-    from . import detect, dicom, phantom, presets
+    from . import brainmodel, detect, dicom, phantom, presets
+    from .register import ct_levels
 
     p = presets.load_all()["dixi-microdeep-d08-05"]
     data, affine, truth, tip = phantom.lead_ct(p, size=40.0)
@@ -99,9 +100,13 @@ def selftest():
         dicom.write_test_series(head, aff, Path(d) / "dcm")
         n1 = len(dicom.convert_dcm2niix(Path(d) / "dcm", Path(d) / "a"))
         n2 = len(dicom.convert_sitk(Path(d) / "dcm", Path(d) / "b"))
-    ok = err < 0.3 and n1 == n2 == 1
+    ct, aff = phantom.head(spacing=4.0, contrast="ct")  # brain model: scikit-image must be in the bundle
+    mask, _ = brainmodel.refine_with_mri(brainmodel.intracranial(ct, aff, (0, 0, 5), ct_levels(ct)),
+                                         phantom.head(spacing=4.0, contrast="mri")[0])
+    faces = len(brainmodel.surface(mask, aff, smooth=5)[1])
+    ok = err < 0.3 and n1 == n2 == 1 and faces > 100
     print(f"brainscope selftest: {'OK' if ok else 'FAILED'} (max contact error {err:.3f} mm; DICOM series: "
-          f"dcm2niix {n1}, SimpleITK {n2})")
+          f"dcm2niix {n1}, SimpleITK {n2}; brain surface {faces} faces)")
     return 0 if ok else 1
 
 

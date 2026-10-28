@@ -32,19 +32,26 @@ Projects are stored in `~/brainscope-projects` (change with `brainscope app --pr
 
 ## Workflow
 
+A project is one subject. The *Subject* steps (1-5) are shared; the modules *Leads* (6-8) and *Brain model* (9) are
+independent of each other and both use them.
+
+Viewer: click to move the crosshair, or drag the *axial / coronal / sagittal* sliders above the views; zoom with
+*− + fit* (keys <kbd>+</kbd> <kbd>−</kbd> <kbd>0</kbd>) and move the zoomed view with Shift+drag or a middle-button
+drag.
+
 1. **Import** the MRI and the CT: image files (NIfTI `.nii`/`.nii.gz`, MGZ/MGH, NRRD, MHA/MHD; other formats
    are converted to NIfTI on import) or DICOM folders (converted inside the app with dcm2niix, or with SimpleITK
    if dcm2niix cannot run; sidecars are anonymized). Choose the species (sets the registration smoothing).
 2. **Orient** each scan separately: rotate by 90° in the sagittal, coronal or axial view and mirror until the
    head is upright, the nose points forward and the subject's left is on the screen left (neurological view).
    Confirm which side is left (e.g. from the CT marker). Only the header changes; voxels are never resampled.
-3. **Coregister** the CT to the MRI. If the scanners' coordinates differ or the CT covers more than the head, first
+3. **AC/PC** (optional, on the MRI alone): mark AC, PC and a midline point; every contact then also gets AC/PC
+   coordinates (origin at the mid-commissural point, AC or PC), and the export can use them as the main x, y, z.
+4. **Coregister** the CT to the MRI. If the scanners' coordinates differ or the CT covers more than the head, first
    click the same landmark in both scans (*rough alignment*); the automatic step then starts from there. Put a
    *region-of-interest* box around the brain so the body and loose soft tissue are ignored. The CT is
    overlaid from the start; set the display window of either scan in the viewer bar; *Center* finds the image (rigid, mutual information). For pigs, optionally restrict it to a box around
    the brain. Check with the CT overlay, adjust by hand if needed, accept.
-4. **AC/PC** (optional, on the MRI alone): mark AC, PC and a midline point; every contact then also gets AC/PC
-   coordinates (origin at the mid-commissural point, AC or PC), and the export can use them as the main x, y, z.
 5. **Frame** (optional): finds an N-bar localizer (e.g. Leksell-compatible; two or three plates) in the CT and gives
    contacts, AC/PC and plans frame coordinates. The localizer geometry is editable per project; the default must be
    checked against your localizer. Several fits are listed (frame mounting, e.g. on animals) to choose from.
@@ -65,6 +72,11 @@ Projects are stored in `~/brainscope-projects` (change with `brainscope app --pr
 8. **Export** the contacts table and, optionally, the coregistered volumes. Save and load results files. If
    something goes wrong, *Make debug bundle* writes a small zip (scans at about 2 mm, the CT around each lead,
    the project state without file names) that can be shared instead of the full scans.
+9. **Brain model** (for figures): the space inside the skull is taken from the CT (grown from a seed point, not
+   crossing bone), then the MRI separates brain from CSF so gyri and sulci show (threshold automatic or set by hand).
+   Cut at the crosshair (remove below/above/behind/in front, keep one hemisphere), set the smoothing and detail,
+   *Build*: the 3D view shows the brain surface with the leads (depth leads as cylinders, contacts as rings).
+   *Export* writes the files below for Python/MATLAB.
 
 *Demo case* (top bar) builds a synthetic pig-like case: wrong orientation headers to fix, a CT marker on the
 left, three leads, and a CT misaligned to the MRI.
@@ -86,6 +98,9 @@ chosen at export.
 | `sub-01_mri_corrected.nii.gz` | optional: the MRI with the corrected header (voxels unchanged) |
 | `sub-01_ct_in_mri.nii.gz` | optional: the CT resampled onto the MRI grid |
 | `sub-01_contacts.nii.gz` + `_contacts_labels.tsv` | optional: a label volume with one ball per contact |
+| `brain/brain_mask.nii.gz`, `brain/brain_mri.nii.gz` | brain model: the mask after cuts and the MRI inside it, on the MRI grid |
+| `brain/brain.gii` `.obj` `.stl`, `brain/lead-<name>-shaft.gii` / `-contacts.gii` (+ `.obj`) | brain model meshes in MRI world mm (Python: `nibabel.load(f).darrays[0].data` = vertices, `[1]` = triangles; MATLAB: `stlread`, or the `gifti` toolbox) |
+| `brain/scene.json` | the meshes with kind, lead and colour, to rebuild the figure |
 
 ## Lead presets
 

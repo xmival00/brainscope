@@ -178,7 +178,7 @@ def get_project(h, name, q):
     return _summary(h, h.app.project(name))
 
 
-@route("POST", r"/api/p/([^/]+)/(undo|redo|species|orient|roi|acpc|frame-model|frame-detect|frame-choose|coreg|nudge|coreg-accept|coreg-reset|lead|lead-edit)")
+@route("POST", r"/api/p/([^/]+)/(undo|redo|species|orient|roi|acpc|frame-model|frame-detect|frame-choose|brain|coreg|nudge|coreg-accept|coreg-reset|lead|lead-edit)")
 def mutate(h, name, action, q):
     p = h.app.project(name)
     b = h.body_json()
@@ -197,6 +197,9 @@ def mutate(h, name, action, q):
                          from_current=bool(b.get("from_current")))
         elif action == "nudge":
             p.nudge(b.get("rot", (0, 0, 0)), b.get("trans", (0, 0, 0)))
+        elif action == "brain":
+            p.build_brain(b.get("seed"), use_mri=b.get("use_mri", True), threshold=b.get("threshold"),
+                          smooth=b.get("smooth", 20), detail=b.get("detail", 1), cuts=b.get("cuts", []))
         elif action == "frame-model":
             p.set_frame_model(b.get("model"), reset=bool(b.get("reset")))
         elif action == "frame-detect":
@@ -378,6 +381,22 @@ def debug_bundle(h, name, q):
     with p.lock:
         z = Path(p.debug_bundle())
     return h.json({"folder": str(z.parent), "file": z.name, "size_mb": round(z.stat().st_size / 1e6, 1)})
+
+
+@route("GET", r"/api/p/([^/]+)/brain/([A-Za-z0-9_.-]+\.(?:gii|nii\.gz))")
+def brain_file(h, name, fname, q):
+    f = h.app.project(name).root / "cache" / "brain" / fname
+    if not f.is_file():
+        raise FileNotFoundError("build the brain model first")
+    return h.file(f)
+
+
+@route("POST", r"/api/p/([^/]+)/brain-export")
+def brain_export(h, name, q):
+    p = h.app.project(name)
+    with p.lock:
+        files = p.export_brain()
+    return h.json({"folder": str(p.root / "outputs" / "brain"), "files": [Path(f).name for f in files]})
 
 
 @route("GET", r"/api/p/([^/]+)/output/([A-Za-z0-9_.-]+)")

@@ -12,9 +12,9 @@
 <header id="top">
   <div class="brand"><img src="/web/logo.svg" alt="" class="logo">brainscope <span class="ruo">Research use only</span></div>
   <div class="proj">
-    <select id="projectSelect" title="Project"></select>
-    <button id="newProject">New project</button>
-    <button id="demoProject" class="ghost" title="Create a project from a synthetic test case">Demo case</button>
+    <select id="projectSelect" title="Subject"></select>
+    <button id="newProject">New subject</button>
+    <button id="demoProject" class="ghost" title="Create a subject from a synthetic test case">Demo case</button>
   </div>
   <div class="spacer"></div>
   <span id="projectFolder" class="muted small"></span>
@@ -23,14 +23,18 @@
 </header>
 <main>
   <nav id="steps">
+    <div class="navsec">Subject</div>
     <button data-step="import"><b>1</b><span>Import</span><i></i></button>
     <button data-step="orient"><b>2</b><span>Orient</span><i></i></button>
     <button data-step="acpc"><b>3</b><span>AC/PC</span><i></i></button>
     <button data-step="coreg"><b>4</b><span>Coregister</span><i></i></button>
     <button data-step="frame"><b>5</b><span>Frame</span><i></i></button>
+    <div class="navsec">Leads</div>
     <button data-step="leads"><b>6</b><span>Leads</span><i></i></button>
     <button data-step="targets"><b>7</b><span>Targets</span><i></i></button>
     <button data-step="export"><b>8</b><span>Export</span><i></i></button>
+    <div class="navsec">Brain model</div>
+    <button data-step="brain"><b>9</b><span>Brain</span><i></i></button>
   </nav>
   <section id="center">
     <div id="viewerBar">
@@ -49,12 +53,15 @@
         <input type="number" id="winHi" step="any" title="Value shown as white">
         <button id="winAuto" class="ghost" title="Back to the automatic window">auto</button>
       </span>
-      <span class="seg" title="Zoom around the crosshair (keys + − 0)"><button id="zoomOut">−</button><button id="zoomIn">+</button><button id="zoomFit">fit</button></span>
+      <span class="seg" title="Zoom around the crosshair (keys + − 0). Move the zoomed view: Shift+drag or middle-button drag."><button id="zoomOut">−</button><button id="zoomIn">+</button><button id="zoomFit">fit</button></span>
       <button id="centerView" class="ghost" title="Put the crosshair in the middle of the image">Center</button>
       <div class="spacer"></div>
       <span id="coords" class="mono"></span>
     </div>
-    <div id="viewerWrap"><canvas id="gl"></canvas><div id="empty">Create or open a project to start.</div></div>
+    <div id="sliceBar"><label>axial <input type="range" id="slZ" min="0" max="1" step="0.001"></label>
+      <label>coronal <input type="range" id="slY" min="0" max="1" step="0.001"></label>
+      <label>sagittal <input type="range" id="slX" min="0" max="1" step="0.001"></label></div>
+    <div id="viewerWrap"><canvas id="gl"></canvas><div id="empty">Create or open a subject to start.</div></div>
     <div id="inspector" hidden>
       <div class="insHead"><b id="insTitle"></b><span class="muted small">Drag a contact to move it. Hover to see the
         plane perpendicular to the lead. Top: lengthwise views; bottom: intensity along the lead (grey) and
