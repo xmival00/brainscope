@@ -33,6 +33,10 @@ From the user (2026-10-28):
 | D11 | No code signing for now. The OS warning on first start is acceptable. |
 | D12 | Repository: `xmival00/brainscope` for now, may move to `bnelair` later. |
 | D13 | Credits are limited: work in small steps that are each committed and pushed, so work can resume anywhere (see `CLAUDE.md`). |
+| D14 | Lead presets are made by the user in the app. Leads in use are standard DBS leads (e.g. Cadence Neuroscience, Medtronic): contacts are often not separable on CT, so contacts are placed from the preset geometry; contact length and spacing must be exact. Directional (segmented) leads: level positions only, no segment orientation. |
+| D15 | The dashboard will embed the UI and engine as they are (plain JS + local HTTP API). |
+| D16 | Full scans cannot be shared with the assistant: the app makes a small debug bundle (scans at ~2 mm, full-resolution CT crops around each lead, project state without file names) to share instead. |
+| D17 | Releases: only the installers (and SHA256SUMS) are stored, as release assets. A tag `v*` makes a draft pre-release that is published only when every platform built and passed its self-test; no workflow artifacts. |
 
 Decided during implementation (the user delegated these, 2026-10-28):
 
@@ -206,9 +210,4 @@ What v1 already does so these plug in:
 
 ## 10. Open questions
 
-1. Which leads should ship as built-in presets (the leads used in pigs)? Typical pig CT voxel size and contact
-   spacing: are contacts usually separable on your CTs?
-2. How will the dashboard host the UI? The UI is plain JavaScript and the engine an HTTP API, so it can be
-   embedded or served as is.
-3. Display: confirm "left is on left" = neurological display (D6). Implemented that way.
-4. Can you provide one or two pig cases (CT + MRI, DICOM and/or NIfTI) for private testing, outside the repo?
+1. Display: confirm "left is on left" = neurological display (D6). Implemented that way.

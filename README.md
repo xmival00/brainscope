@@ -49,7 +49,9 @@ Projects are stored in `~/brainscope-projects` (change with `brainscope app --pr
    The inspector shows two lengthwise views of the straightened lead, the profile with the fitted model, and
    the perpendicular plane under the mouse. Drag a contact to move it, shift all contacts, or keep one contact
    and fit the others to it.
-5. **Export** the contacts table and, optionally, the coregistered volumes. Save and load results files.
+5. **Export** the contacts table and, optionally, the coregistered volumes. Save and load results files. If
+   something goes wrong, *Make debug bundle* writes a small zip (scans at about 2 mm, the CT around each lead,
+   the project state without file names) that can be shared instead of the full scans.
 
 *Demo case* (top bar) builds a synthetic pig-like case: wrong orientation headers to fix, a CT marker on the
 left, three leads, and a CT misaligned to the MRI.
@@ -100,6 +102,7 @@ brainscope info FILE.nii.gz               # geometry of a NIfTI
 brainscope dicom DICOM_DIR OUT_DIR        # DICOM to NIfTI
 brainscope coreg --ct CT --mri MRI --out ct_to_mri.txt [--species pig]
 brainscope detect --ct CT --tip X Y Z --entry X Y Z --preset dixi-microdeep-d08-10
+brainscope debug-bundle PROJECT_DIR       # small zip to share when something goes wrong
 brainscope selftest
 ```
 
@@ -115,5 +118,5 @@ python -m pytest                         # about 2 minutes
 brainscope app --browser                 # UI in the default browser
 ```
 
-Installers: *Actions → installers → Run workflow* builds them (artifacts kept 7 days); pushing a tag `v*` also
-publishes a release. Third-party licenses: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Installers: *Actions → installers → Run workflow* builds and self-tests them without storing anything; pushing a
+tag `v*` creates a draft pre-release, uploads the installers to it and publishes it when all platforms passed. Third-party licenses: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

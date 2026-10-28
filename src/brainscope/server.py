@@ -334,6 +334,14 @@ def export(h, name, q):
     return h.json({"folder": str(p.root / "outputs"), "files": [Path(f).name for f in files]})
 
 
+@route("POST", r"/api/p/([^/]+)/debug-bundle")
+def debug_bundle(h, name, q):
+    p = h.app.project(name)
+    with p.lock:
+        z = Path(p.debug_bundle())
+    return h.json({"folder": str(z.parent), "file": z.name, "size_mb": round(z.stat().st_size / 1e6, 1)})
+
+
 @route("GET", r"/api/p/([^/]+)/output/([A-Za-z0-9_.-]+)")
 def output_file(h, name, fname, q):
     p = h.app.project(name)

@@ -598,6 +598,12 @@ function exportHTML() {
   ${e ? `<div class="card"><b>Written to</b> <span class="mono small">${esc(e.folder)}</span><ul class="files">
     ${e.files.map((f) => `<li>${dsk ? esc(f) : `<a href="${P(`/output/${encodeURIComponent(f)}`)}" download>${esc(f)}</a>`}</li>`).join('')}</ul>
     ${dsk ? '<button id="openFolder">Open folder</button>' : ''}</div>` : ''}
+  <h3>Debug bundle</h3>
+  <div class="card"><p class="small">A small zip to share when something goes wrong: both scans at about 2 mm, the CT at full
+    resolution around each lead, and the project state. File names are removed.</p>
+    <div class="row"><button id="debugBundle">Make debug bundle</button></div>
+    ${S.debug ? `<p class="small">${dsk ? esc(`${S.debug.folder}/${S.debug.file}`) : `<a href="${P(`/output/${encodeURIComponent(S.debug.file)}`)}" download>${esc(S.debug.file)}</a>`} (${S.debug.size_mb} MB)
+    ${dsk ? '<button id="openDebug">Open folder</button>' : ''}</p>` : ''}</div>
   <h3>Load results</h3>
   <div class="card"><p class="small">Load a <span class="mono">.brainscope.json</span> results file into this project (the coregistration must exist).</p>
     <label class="row small"><input type="checkbox" id="replace" ${S.replaceOnImport ? 'checked' : ''}> Replace all current leads (otherwise leads with the same name are replaced)</label>
@@ -610,6 +616,11 @@ function bindExport() {
     if (r) { S.lastExport = r; toast(`${r.files.length} files written.`, 'ok'); render(); }
   };
   if ($('#openFolder')) $('#openFolder').onclick = () => desktopApi()?.open_folder(S.lastExport.folder);
+  $('#debugBundle').onclick = async () => {
+    const r = await busy('Making the debug bundle…', () => api(P('/debug-bundle'), {}));
+    if (r) { S.debug = r; render(); }
+  };
+  if ($('#openDebug')) $('#openDebug').onclick = () => desktopApi()?.open_folder(S.debug.folder);
   $('#replace').onchange = (e) => { S.replaceOnImport = e.target.checked; };
   $('#loadResults').onclick = () => {
     const inp = $('#leadsInput');

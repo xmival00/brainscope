@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import threading
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -485,6 +486,59 @@ class Project:
             out[:, :, z] = np.clip(np.round(v), -32768, 32767).reshape(ii.shape)
         return out
 
+    # ---- debug bundle (small enough to share; no names, no original headers) ----
+    def debug_bundle(self, coarse_mm=2.0, margin_mm=8.0, max_side_mm=90.0):
+        """Zip with both scans at about `coarse_mm` (raw headers), a full-resolution CT crop around each lead,
+        and the project state, so a problem can be reproduced without the full scans."""
+        out = self.root / "outputs" / "debug"
+        shutil.rmtree(out, ignore_errors=True)
+        out.mkdir(parents=True)
+        files = []
+        for role in ROLES:
+            if self.scan(role, required=False):
+                v = self.volume(role)
+                data, aff = _block_mean(v.data, v.affine, coarse_mm)
+                files.append(out / f"{role}_coarse.nii.gz")
+                volume.save(files[-1], np.round(data).astype(np.int16 if role == "ct" else np.float32), aff)
+        if self.scan("ct", required=False) and self.leads:
+            ct = self.volume("ct")
+            inv = np.linalg.inv(ct.affine)
+            to_raw = np.linalg.inv(self.ct_raw_to_mri()) if self.subject.get("coreg") else None
+            for L in self.leads:
+                pts = [detect.positions(L)]
+                if to_raw is not None and L.get("tip_mri"):
+                    pts.append(apply(to_raw, [L["tip_mri"], L["entry_mri"]]))
+                pts = np.vstack(pts)
+                c = pts.mean(0)
+                half = np.minimum((pts.max(0) - pts.min(0)) / 2 + margin_mm, max_side_mm / 2)
+                corners = np.array([[c[0] + sx * half[0], c[1] + sy * half[1], c[2] + sz * half[2]]
+                                    for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)])
+                vox = apply(inv, corners)
+                lo = np.clip(np.floor(vox.min(0)).astype(int), 0, np.array(ct.data.shape) - 1)
+                hi = np.clip(np.ceil(vox.max(0)).astype(int) + 1, 1, ct.data.shape)
+                crop = ct.data[lo[0]:hi[0], lo[1]:hi[1], lo[2]:hi[2]]
+                shift = np.eye(4)
+                shift[:3, 3] = lo
+                files.append(out / f"ct_crop_{re.sub(r'[^A-Za-z0-9_-]', '_', L['name'])}.nii.gz")
+                volume.save(files[-1], np.clip(np.round(crop), -32768, 32767).astype(np.int16), ct.affine @ shift)
+        state = json.loads(json.dumps(self.data, default=jsonable))
+        for role, s in state["subjects"][0]["scans"].items():
+            s["source_name"] = f"{role} (name removed)"
+        files.append(out / "project.json")
+        _write_json(files[-1], state)
+        files.append(out / "README.txt")
+        files[-1].write_text(
+            "brainscope debug bundle\n"
+            "- <role>_coarse.nii.gz: the scans block-averaged to about 2 mm, with their ORIGINAL (raw) headers\n"
+            "- ct_crop_<lead>.nii.gz: full-resolution CT around each lead, raw CT world coordinates\n"
+            "- project.json: orientation fixes, coregistration, leads (file names removed)\n")
+        zpath = self.root / "outputs" / f"brainscope-debug-{self.root.name.replace(' ', '_')}.zip"
+        with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
+            for f in files:
+                z.write(f, f.name)
+        shutil.rmtree(out, ignore_errors=True)
+        return str(zpath)
+
     # ---- for the UI ----
     def summary(self):
         sub = self.subject
@@ -505,3 +559,14 @@ class Project:
         return {"name": self.root.name, "species": sub["species"], "scans": scans, "coreg": sub.get("coreg"),
                 "leads": leads, "can_undo": bool(self.undo_stack), "can_redo": bool(self.redo_stack),
                 "folder": str(self.root)}
+
+
+def _block_mean(data, affine, target_mm):
+    """Average blocks of voxels to reach about `target_mm`; the affine keeps the same world positions."""
+    sp = np.sqrt((affine[:3, :3] ** 2).sum(0))
+    f = np.maximum(1, np.round(target_mm / sp).astype(int))
+    n = np.array(data.shape[:3]) // f
+    d = data[:n[0] * f[0], :n[1] * f[1], :n[2] * f[2]].reshape(n[0], f[0], n[1], f[1], n[2], f[2]).mean((1, 3, 5))
+    scale = np.diag(list(f) + [1]).astype(float)
+    scale[:3, 3] = (f - 1) / 2
+    return d, affine @ scale

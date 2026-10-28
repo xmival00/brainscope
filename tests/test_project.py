@@ -58,6 +58,13 @@ def test_full_workflow_export_and_reimport(tmp_path, case):
     for r in rows:
         assert np.allclose([r["x"], r["y"], r["z"]], [again[r["name"]][k] for k in "xyz"], atol=1e-6)
 
+    import zipfile
+    z = zipfile.ZipFile(p.debug_bundle())
+    names = set(z.namelist())
+    assert {"mri_coarse.nii.gz", "ct_coarse.nii.gz", "ct_crop_LA.nii.gz", "project.json", "README.txt"} <= names
+    assert "mri.nii.gz" not in z.read("project.json").decode()
+    assert sum(i.file_size for i in z.infolist()) < 20e6
+
     p.edit_lead("RB", "shift", ds=0.5)
     p.undo()
     assert {r["name"]: r["x"] for r in p.contacts()}["RB1"] == pytest.approx(again["RB1"]["x"])

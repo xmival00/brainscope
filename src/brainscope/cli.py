@@ -35,6 +35,9 @@ def main(argv=None):
     t.add_argument("--preset", required=True)
     t.add_argument("--name", default="A")
     t.add_argument("--curved", action="store_true")
+    b = sub.add_parser("debug-bundle", help="write a small zip (coarse scans, CT crops around leads, project state) "
+                       "to share when something goes wrong")
+    b.add_argument("project", help="project folder")
     sub.add_parser("selftest", help="quick check that the installation works")
     args = ap.parse_args(argv)
 
@@ -72,6 +75,10 @@ def main(argv=None):
         for c, xyz in zip(lead["contacts"], detect.positions(lead)):
             print(presets.label(lead["preset"], args.name, c["index"]), *np.round(xyz, 3), c["mode"],
                   c["confidence"], sep="\t")
+    elif args.cmd == "debug-bundle":
+        from .project import Project
+
+        print(Project(args.project).debug_bundle())
     elif args.cmd == "selftest":
         return selftest()
     return 0

@@ -1,5 +1,6 @@
-# Installers: run by hand (Actions -> installers -> Run workflow) or by pushing a tag v*.
-# A tag also publishes a GitHub release with the installers.
+# Installers. Run by hand (Actions -> installers -> Run workflow): build and self-test only, nothing is stored.
+# Push a tag v*: a draft pre-release is created, each platform uploads its installer straight to it, and it is
+# published only when every platform succeeded. No workflow artifacts are kept.
 name: installers
 on:
   workflow_dispatch:
@@ -12,8 +13,22 @@ env:
   INNO_SETUP_URL: https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe
   INNO_SETUP_SHA256: 9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732
 jobs:
+  draft:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create the draft pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --prerelease \
+            --title "brainscope $GITHUB_REF_NAME (test version)" \
+            --notes "Test version. Research use only. The installers are not code-signed: confirm the first start (Windows: More info -> Run anyway; macOS: System Settings -> Privacy & Security -> Open Anyway). Check downloads against SHA256SUMS."
+
   windows:
     name: Windows x64
+    needs: draft
+    if: ${{ !cancelled() && needs.draft.result != 'failure' }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -45,17 +60,19 @@ jobs:
           iscc /DAppVersion=$version /DSourceDir="$PWD\dist\brainscope" /DOutputDir="$PWD\dist" packaging\windows\brainscope.iss
           if ($LASTEXITCODE -ne 0) { throw "iscc failed" }
           Compress-Archive -Path dist\brainscope -DestinationPath "dist\brainscope-$version-windows-x64-portable.zip"
-      - uses: actions/upload-artifact@v7
-        with:
-          name: brainscope-windows-x64
-          retention-days: 7
-          path: |
-            dist/*-setup.exe
-            dist/*-portable.zip
-          if-no-files-found: error
+      - name: Upload to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $files = @(Get-ChildItem dist\*-setup.exe, dist\*-portable.zip | ForEach-Object FullName)
+          gh release upload $env:GITHUB_REF_NAME $files --repo $env:GITHUB_REPOSITORY
 
   macos:
     name: macOS ${{ matrix.arch }}
+    needs: draft
+    if: ${{ !cancelled() && needs.draft.result != 'failure' }}
     runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
@@ -74,27 +91,23 @@ jobs:
       - name: Self-test the bundle
         run: dist/brainscope.app/Contents/MacOS/brainscope selftest
       - run: packaging/macos/make_dmg.sh
-      - uses: actions/upload-artifact@v7
-        with:
-          name: brainscope-macos-${{ matrix.arch }}
-          retention-days: 7
-          path: dist/*.dmg
-          if-no-files-found: error
+      - name: Upload to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" dist/*.dmg --repo "$GITHUB_REPOSITORY"
 
-  release:
+  publish:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [windows, macos]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v7
-        with:
-          path: dist
-          merge-multiple: true
-      - name: Publish the release
+      - name: Checksums, then publish the pre-release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cd dist && sha256sum * > SHA256SUMS
-          gh release create "$GITHUB_REF_NAME" * --repo "$GITHUB_REPOSITORY" --prerelease \
-            --title "brainscope $GITHUB_REF_NAME" \
-            --notes "Research use only. Installers are not code-signed: confirm the first start (Windows: More info -> Run anyway; macOS: System Settings -> Privacy & Security -> Open Anyway)."
+          mkdir dl && cd dl
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY"
+          sha256sum * > SHA256SUMS
+          gh release upload "$GITHUB_REF_NAME" SHA256SUMS --repo "$GITHUB_REPOSITORY"
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease
