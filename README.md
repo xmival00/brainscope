@@ -119,4 +119,5 @@ brainscope app --browser                 # UI in the default browser
 ```
 
 Installers: *Actions → installers → Run workflow* builds and self-tests them without storing anything; pushing a
-tag `v*` creates a draft pre-release, uploads the installers to it and publishes it when all platforms passed. Third-party licenses: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+tag `v*` (or a manual run with a tag name in "release") creates a draft pre-release, uploads the installers to it
+and publishes it when all platforms passed. Third-party licenses: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
