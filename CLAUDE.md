@@ -40,6 +40,6 @@ demo case (`brainscope demo DIR`), see git history for the script pattern.
   v0.1.4 (zoom, coregistration region-of-interest box);
   v0.1.5 (AC/PC landmarks and coordinates, planned vs delivered);
   v0.1.6 (stereotactic frame from the N-bar localizer, Targets step, AC/PC on the MRI first).
-- Next: verify the localizer geometry and test frame detection on a real CT (PLAN section 10); the user tests on
-  real human and pig data and sends debug bundles; tune detection on them (DBS leads,
+- Next: 0.1.7 = plane sliders, subject/task navigation, Brain model module (PLAN D29-D30); 0.1.8 = Structures
+  module (D31). Also: verify the localizer geometry on a real CT (PLAN section 10); the user tests on real human and pig data and sends debug bundles; tune detection on them (DBS leads,
   contacts mostly not separable); answer `docs/PLAN.md` section 10.
