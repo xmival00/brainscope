@@ -137,15 +137,21 @@ class Project:
             raise ValueError(f"role must be one of {ROLES}")
         src = Path(src)
         name = source_name or src.name
-        if not volume.is_nifti(name):
-            raise ValueError("expected a .nii or .nii.gz file")
-        _, shape = volume.raw_affine(src)
+        if not volume.is_supported(name):
+            raise ValueError("expected a NIfTI (.nii, .nii.gz), MGZ/MGH, NRRD or MHA/MHD file; "
+                             "for DICOM use 'DICOM folder…'")
+        sha = volume.sha256(src)
+        if volume.is_nifti(name):
+            dst = self.root / "scans" / f"{role}-{sha[:12]}{'.nii.gz' if name.lower().endswith('.gz') else '.nii'}"
+            if not dst.exists():
+                shutil.copyfile(src, dst)
+        else:  # other formats are converted once, on import
+            dst = self.root / "scans" / f"{role}-{sha[:12]}.nii.gz"
+            if not dst.exists():
+                volume.to_nifti(src, dst)
+        _, shape = volume.raw_affine(dst)
         if len(shape) < 3 or min(shape[:3]) < 2:
             raise ValueError("expected a 3D volume")
-        sha = volume.sha256(src)
-        dst = self.root / "scans" / f"{role}-{sha[:12]}{'.nii.gz' if name.lower().endswith('.gz') else '.nii'}"
-        if not dst.exists():
-            shutil.copyfile(src, dst)
         self.checkpoint()
         self.subject["scans"][role] = {"file": f"scans/{dst.name}", "source_name": Path(name).name, "sha256": sha,
                                        "shape": [int(x) for x in shape[:3]], "orient": np.eye(3, dtype=int).tolist(),

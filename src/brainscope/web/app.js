@@ -50,7 +50,8 @@ const desktopApi = () => (S.state?.desktop && window.pywebview?.api ? window.pyw
 // ---------- viewer ----------
 const nv = new niivue.Niivue({
   backColor: [0, 0, 0, 1], crosshairColor: [0.25, 0.85, 1, 0.75], isRadiologicalConvention: false,
-  show3Dcrosshair: true, isOrientationTextVisible: true, dragAndDropEnabled: false, loadingText: '',
+  show3Dcrosshair: true, isOrientationTextVisible: true, showAllOrientationMarkers: true, isOrientCube: true,
+  dragAndDropEnabled: false, loadingText: '',
 });
 let nvReady = nv.attachToCanvas($('#gl'));
 nv.onLocationChange = () => updateCoords();
@@ -236,7 +237,7 @@ function scanCard(role) {
   const info = s ? `<div class="kv"><span>File</span><span>${esc(s.source_name)}</span><span>Size</span><span>${s.shape.join(' × ')}</span>
     <span>Voxel (mm)</span><span>${s.spacing.map((x) => fmt(x, 2)).join(' × ')}</span></div>` : '<p class="muted">Not imported yet.</p>';
   return `<div class="card"><div class="row"><b>${title}</b><span class="spacer"></span>${s ? '<span class="badge ok">imported</span>' : ''}</div>${info}
-    <div class="row"><button data-nifti="${role}">NIfTI file…</button><button data-dicom="${role}">DICOM folder…</button></div>
+    <div class="row"><button data-nifti="${role}" title="NIfTI (.nii, .nii.gz), MGZ/MGH, NRRD, MHA/MHD">Image file…</button><button data-dicom="${role}">DICOM folder…</button></div>
     ${role === 'ct' && s && S.p.leads.length ? '<p class="muted small">Importing another CT removes the leads of this project.</p>' : ''}</div>`;
 }
 function importHTML() {
@@ -310,6 +311,7 @@ function orientHTML() {
     ${S.p.scans[x]?.left_confirmed ? '✓' : ''}</button>`).join('')}</div>
   ${s ? `<p>Make the ${r.toUpperCase()} anatomically upright: <b>top</b> of the head up in the coronal and sagittal views, <b>front</b> (nose) up in the axial view,
   and the subject's <b>left on the left</b> of the screen (neurological view). Only the file header changes; voxels are never resampled.</p>
+  ${orientGuideHTML()}
   <h3>Rotate 90° in a view</h3>
   ${ops.map(([op, view]) => `<div class="row"><label>${view}</label><button data-op="${op}+">↺ rotate</button><button data-op="${op}-">↻ rotate</button></div>`).join('')}
   <h3>Mirror</h3>
@@ -320,6 +322,17 @@ function orientHTML() {
   <div class="row"><input type="text" id="leftNote" placeholder="how you know (e.g. CT marker)" value="${esc(s.left_note)}" style="flex:1"></div>
   <p class="muted small">A left–right mirror cannot be detected from the images. Rotating or mirroring clears this confirmation.</p></div>
   <div class="row"><span class="spacer"></span><button class="primary" id="next">Next: coregister</button></div>` : '<p class="muted">Import this scan first.</p>'}`;
+}
+function orientGuideHTML() {  // how each view should look once the scan is oriented (for pigs: up = dorsal, front = snout)
+  const t = (x, y, s) => `<text x="${x}" y="${y}" font-size="9" fill="#8b93a1" text-anchor="middle">${s}</text>`;
+  const fig = (title, body, labels) => `<figure style="margin:0;text-align:center"><svg width="86" height="78" viewBox="0 0 86 78">
+    <g stroke="#d6dbe4" stroke-width="1.5" fill="#2b3240">${body}</g>${labels}</svg><figcaption class="muted small">${title}</figcaption></figure>`;
+  const lab = (top, left, right, bottom) => t(43, 9, top) + t(6, 42, left) + t(80, 42, right) + t(43, 76, bottom);
+  return `<div class="card" style="display:flex;justify-content:space-between;padding:6px 8px">
+    ${fig('axial', '<ellipse cx="43" cy="42" rx="22" ry="26"/><path d="M37 17 L43 7 L49 17" fill="#d6dbe4"/>', lab('A', 'L', 'R', 'P'))}
+    ${fig('coronal', '<ellipse cx="43" cy="40" rx="22" ry="27"/><circle cx="35" cy="38" r="3" fill="#d6dbe4"/><circle cx="51" cy="38" r="3" fill="#d6dbe4"/>', lab('S', 'L', 'R', 'I'))}
+    ${fig('sagittal', '<ellipse cx="40" cy="40" rx="24" ry="27"/><path d="M63 36 L74 46 L62 50" fill="#d6dbe4"/>', lab('S', 'P', 'A', 'I'))}
+  </div>`;
 }
 function bindOrient() {
   $$('[data-role]').forEach((b) => { b.onclick = () => { S.orientRole = b.dataset.role; render(); refreshViewer(); }; });

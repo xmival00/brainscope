@@ -85,15 +85,23 @@ def main(argv=None):
 
 
 def selftest():
+    import tempfile
+    from pathlib import Path
+
     from . import detect, dicom, phantom, presets
 
     p = presets.load_all()["dixi-microdeep-d08-05"]
     data, affine, truth, tip = phantom.lead_ct(p, size=40.0)
     lead = detect.detect(data, affine, tip, truth[-1] + 5 * (truth[-1] - truth[0]) / 14, p)
     err = float(np.abs(detect.positions(lead) - truth).max())
-    dicom.binary()
-    ok = err < 0.3
-    print(f"brainscope selftest: {'OK' if ok else 'FAILED'} (max contact error {err:.3f} mm)")
+    with tempfile.TemporaryDirectory() as d:  # both DICOM converters must work in the bundle
+        head, aff = phantom.head(spacing=6.0, contrast="ct")
+        dicom.write_test_series(head, aff, Path(d) / "dcm")
+        n1 = len(dicom.convert_dcm2niix(Path(d) / "dcm", Path(d) / "a"))
+        n2 = len(dicom.convert_sitk(Path(d) / "dcm", Path(d) / "b"))
+    ok = err < 0.3 and n1 == n2 == 1
+    print(f"brainscope selftest: {'OK' if ok else 'FAILED'} (max contact error {err:.3f} mm; DICOM series: "
+          f"dcm2niix {n1}, SimpleITK {n2})")
     return 0 if ok else 1
 
 

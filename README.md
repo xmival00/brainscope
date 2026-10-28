@@ -30,8 +30,9 @@ Projects are stored in `~/brainscope-projects` (change with `brainscope app --pr
 
 ## Workflow
 
-1. **Import** the MRI and the CT: NIfTI files or DICOM folders (converted inside the app with dcm2niix;
-   sidecars are anonymized). Choose the species (sets the registration smoothing).
+1. **Import** the MRI and the CT: image files (NIfTI `.nii`/`.nii.gz`, MGZ/MGH, NRRD, MHA/MHD; other formats
+   are converted to NIfTI on import) or DICOM folders (converted inside the app with dcm2niix, or with SimpleITK
+   if dcm2niix cannot run; sidecars are anonymized). Choose the species (sets the registration smoothing).
 2. **Orient** each scan separately: rotate by 90° in the sagittal, coronal or axial view and mirror until the
    head is upright, the nose points forward and the subject's left is on the screen left (neurological view).
    Confirm which side is left (e.g. from the CT marker). Only the header changes; voxels are never resampled.

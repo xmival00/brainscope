@@ -32,7 +32,7 @@ class DesktopApi:
     def pick_nifti(self):
         import webview
 
-        return self._dialog(webview.FileDialog.OPEN, ("NIfTI (*.nii;*.nii.gz)", "All files (*.*)"))
+        return self._dialog(webview.FileDialog.OPEN)  # no filter: macOS dialogs grey out .nii.gz with one
 
     def pick_folder(self):
         import webview

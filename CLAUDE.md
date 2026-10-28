@@ -34,6 +34,6 @@ demo case (`brainscope demo DIR`), see git history for the script pattern.
 ## Status
 - Done: plan; engine; DICOM; project + undo; results file import/export; TSV export; UI; debug bundle;
   installers workflow (draft pre-release on tag, no artifacts); tests (synthetic ground truth, DICOM round trip,
-  HTTP API). Pre-release v0.1.0 published for the user to test.
+  HTTP API). Pre-releases: v0.1.0; v0.1.1 (DICOM fallback, more formats, orientation aids).
 - Next: the user tests on real human and pig data and sends debug bundles; tune detection on them (DBS leads,
   contacts mostly not separable); answer `docs/PLAN.md` section 10.

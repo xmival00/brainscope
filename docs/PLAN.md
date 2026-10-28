@@ -37,6 +37,8 @@ From the user (2026-10-28):
 | D15 | The dashboard will embed the UI and engine as they are (plain JS + local HTTP API). |
 | D16 | Full scans cannot be shared with the assistant: the app makes a small debug bundle (scans at ~2 mm, full-resolution CT crops around each lead, project state without file names) to share instead. |
 | D17 | Releases: only the installers (and SHA256SUMS) are stored, as release assets. A tag `v*` makes a draft pre-release that is published only when every platform built and passed its self-test; no workflow artifacts. |
+| D18 | Import also MGZ/MGH, NRRD, MHA/MHD (converted to NIfTI once, on import). DICOM: dcm2niix first, SimpleITK's reader if dcm2niix cannot run (seen on a user machine); the self-test of each installer runs both. |
+| D19 | Orientation aids: labels on all four sides of each view, Niivue's orientation cube, and a small picture of how each view should look. |
 
 Decided during implementation (the user delegated these, 2026-10-28):
 

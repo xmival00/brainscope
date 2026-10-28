@@ -70,3 +70,29 @@ def sha256(path):
 def is_nifti(path):
     name = Path(path).name.lower()
     return name.endswith(".nii") or name.endswith(".nii.gz")
+
+
+NIBABEL_EXT = (".mgz", ".mgh")
+SITK_EXT = (".nrrd", ".nhdr", ".mha", ".mhd")
+
+
+def is_supported(path):
+    name = Path(path).name.lower()
+    return is_nifti(name) or name.endswith(NIBABEL_EXT + SITK_EXT)
+
+
+def to_nifti(src, dst):
+    """Write `src` (MGZ/MGH or NRRD/MHA/MHD) as a NIfTI with the same world geometry."""
+    name = Path(src).name.lower()
+    if name.endswith(NIBABEL_EXT):
+        img = nib.load(str(src))
+        data, affine = np.asanyarray(img.dataobj), img.affine
+    else:
+        import SimpleITK as sitk
+
+        from .transforms import from_sitk
+
+        data, affine = from_sitk(sitk.ReadImage(str(src)))
+    if data.ndim == 4:
+        data = data[..., 0]
+    save(dst, data, affine)

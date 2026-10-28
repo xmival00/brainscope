@@ -57,6 +57,14 @@ def to_sitk(data, affine):
     return img
 
 
+def from_sitk(img):
+    """SimpleITK image (LPS) -> (numpy volume indexed [i, j, k], RAS affine)."""
+    a = np.eye(4)
+    a[:3, :3] = np.array(img.GetDirection()).reshape(3, 3) * np.array(img.GetSpacing())
+    a[:3, 3] = img.GetOrigin()
+    return sitk.GetArrayFromImage(img).transpose(2, 1, 0), RAS_LPS @ a
+
+
 def sitk_to_ras(tx):
     """ITK transform (fixed -> moving points, LPS) -> 4x4 in RAS mapping fixed world to moving world."""
     r = np.array(tx.GetMatrix()).reshape(3, 3)
